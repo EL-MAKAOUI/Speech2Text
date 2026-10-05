@@ -11,6 +11,7 @@ from conftest import requires_espeak, requires_ffmpeg, requires_sphinx
 from speech2text import engines
 from speech2text.engines import base
 from speech2text.engines.base import EngineUnavailable, TranscriptionRequest
+from speech2text.engines.whisper import MODEL_SIZES
 from speech2text.model import Segment
 
 class TestConfidence:
@@ -166,3 +167,45 @@ class TestSphinxAdapter:
         )
         words = " ".join(s.text for s in result.segments).split()
         assert len(words) <= 4, f"a sine tone produced {words!r}"
+
+
+class TestModelCacheLayout:
+    """Each size comes from its own repository, and they are not uniformly named."""
+
+    @pytest.mark.parametrize(
+        "model_size,repository",
+        [
+            ("tiny", "Systran/faster-whisper-tiny"),
+            ("base", "Systran/faster-whisper-base"),
+            ("large-v3", "Systran/faster-whisper-large-v3"),
+            ("large-v3-turbo", "mobiuslabsgmbh/faster-whisper-large-v3-turbo"),
+            ("distil-large-v3", "Systran/faster-distil-whisper-large-v3"),
+        ],
+    )
+    def test_a_downloaded_model_is_found_wherever_it_came_from(
+        self, tmp_path, model_size, repository
+    ):
+        from speech2text.engines.whisper import WhisperEngine
+
+        engine = WhisperEngine(model_size, cache_dir=tmp_path)
+        assert engine.model_ready() is False
+
+        snapshot = (
+            tmp_path / ("models--" + repository.replace("/", "--")) / "snapshots" / "rev"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.bin").write_bytes(b"weights")
+        assert engine.model_ready() is True, f"{model_size} was not found in the cache"
+
+    @pytest.mark.parametrize("model_size", MODEL_SIZES)
+    def test_every_offered_size_is_one_the_library_can_fetch(self, model_size):
+        from faster_whisper.utils import _MODELS
+
+        assert model_size in _MODELS, f"{model_size} is not a model faster-whisper knows"
+
+    def test_a_local_folder_of_weights_is_accepted(self, tmp_path):
+        from speech2text.engines.whisper import WhisperEngine
+
+        local = tmp_path / "my-own-model"
+        local.mkdir()
+        assert WhisperEngine(str(local), cache_dir=tmp_path).model_ready() is True

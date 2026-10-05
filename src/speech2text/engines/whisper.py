@@ -40,14 +40,35 @@ def model_cache_dir() -> Path:
     return Path(base).expanduser() / "speech2text" / "models"
 
 
+def _cache_folders(model_size: str) -> list[str]:
+    """The cache folder names a model's weights could be under.
+
+    faster-whisper knows which repository serves each size, and they are not
+    uniformly named — ``distil-large-v3`` comes from
+    ``Systran/faster-distil-whisper-large-v3`` and ``large-v3-turbo`` from a
+    different organisation again. Asking the library beats pattern-matching
+    on the name; the glob is only a fallback for when it cannot be asked.
+    """
+    try:
+        from faster_whisper.utils import _MODELS
+
+        repository = _MODELS.get(model_size)
+    except Exception:  # pragma: no cover - the library is optional
+        repository = None
+    if repository:
+        return ["models--" + repository.replace("/", "--")]
+    return [f"models--*faster-whisper-{model_size}"]
+
+
 def _is_downloaded(model_size: str, cache: Path) -> bool:
     """True when the weights are already on disk, so a run needs no network."""
     if Path(model_size).expanduser().is_dir():
         return True
     # huggingface_hub lays a repository out as models--<org>--<name>/snapshots/<rev>.
-    for candidate in cache.glob(f"models--*faster-whisper-{model_size}"):
-        if any(candidate.glob("snapshots/*/model.bin")):
-            return True
+    for pattern in _cache_folders(model_size):
+        for candidate in cache.glob(pattern):
+            if any(candidate.glob("snapshots/*/model.bin")):
+                return True
     return (cache / model_size / "model.bin").exists()
 
 
