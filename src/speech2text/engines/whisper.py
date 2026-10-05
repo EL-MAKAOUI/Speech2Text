@@ -72,6 +72,18 @@ def _is_downloaded(model_size: str, cache: Path) -> bool:
     return (cache / model_size / "model.bin").exists()
 
 
+def downloaded_bytes(model_size: str, cache: Path) -> int:
+    """How much disk a model's weights take, or 0 when it is not here."""
+    total = 0
+    for pattern in _cache_folders(model_size):
+        for candidate in cache.glob(pattern):
+            for item in candidate.rglob("*"):
+                # Snapshots are symlinks into blobs; count each blob once.
+                if item.is_file() and not item.is_symlink():
+                    total += item.stat().st_size
+    return total
+
+
 class WhisperEngine(SpeechEngine):
     name = "whisper"
     title = "Standard (Whisper)"

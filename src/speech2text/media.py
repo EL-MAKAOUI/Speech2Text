@@ -274,6 +274,16 @@ def sha256(path: str | os.PathLike[str], chunk: int = 1 << 20) -> str:
     return digest.hexdigest()
 
 
+def format_size(num_bytes: float) -> str:
+    """``3.1 GB`` — how big something is, for reading."""
+    size = float(max(0.0, num_bytes))
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB" if size < 1024 else f"{size / 1024:.1f} TB"
+
+
 def format_duration(seconds: float) -> str:
     """``1:03:07`` or ``4:12`` — how long something is, for reading."""
     seconds = max(0, int(round(seconds)))

@@ -245,7 +245,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
 
 def cmd_models(args: argparse.Namespace) -> int:
     """List Whisper models, or fetch one so later runs need no network."""
-    from .engines.whisper import WhisperEngine, model_cache_dir
+    from .engines.whisper import WhisperEngine, downloaded_bytes, model_cache_dir
 
     cache = Path(args.cache).expanduser() if args.cache else model_cache_dir()
 
@@ -255,14 +255,32 @@ def cmd_models(args: argparse.Namespace) -> int:
         if not usable:
             return _fail(reason)
         if engine.model_ready() and not args.force:
-            print(f"{args.size} is already in {cache}")
+            on_disk = media.format_size(downloaded_bytes(args.size, cache))
+            print(f"{args.size} is already in {cache} ({on_disk})")
             return 0
-        print(f"fetching {args.size} into {cache} …", file=sys.stderr)
+
+        # A multi-gigabyte download with no word about its size looks stalled.
+        expected = APPROXIMATE_SIZES.get(args.size)
+        print(
+            f"fetching {args.size}"
+            + (f", about {expected}" if expected else "")
+            + f", into {cache}",
+            file=sys.stderr,
+        )
+        print(
+            "The download reports its own progress below. A large model takes "
+            "a while; nothing else is needed while it runs.",
+            file=sys.stderr,
+        )
         try:
             engine.load()
         except EngineError as exc:
             return _fail(str(exc))
-        print(f"{args.size} is ready. Later runs of this model need no network.")
+        on_disk = media.format_size(downloaded_bytes(args.size, cache))
+        print(
+            f"{args.size} is ready ({on_disk} in {cache}). "
+            f"Later runs of this model need no network."
+        )
         return 0
 
     print(f"Models are kept in {cache}")
@@ -270,8 +288,12 @@ def cmd_models(args: argparse.Namespace) -> int:
     print(f"{'model':<18}{'approx.':<10}{'state'}")
     for size in MODEL_SIZES:
         ready = WhisperEngine(size, cache_dir=cache).model_ready()
-        print(f"{size:<18}{APPROXIMATE_SIZES.get(size, '—'):<10}"
-              f"{'downloaded' if ready else 'not downloaded'}")
+        state = (
+            f"downloaded, {media.format_size(downloaded_bytes(size, cache))}"
+            if ready
+            else "not downloaded"
+        )
+        print(f"{size:<18}{APPROXIMATE_SIZES.get(size, '—'):<10}{state}")
     print("\nFetch one with:  speech2text models get <model>")
     return 0
 

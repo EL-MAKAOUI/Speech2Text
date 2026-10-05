@@ -251,7 +251,7 @@ class TestModels:
         (snapshot / "model.bin").write_bytes(b"weights")
         code, out, _ = run(capsys, "models", "--cache", str(tmp_path))
         base_line = next(line for line in out.splitlines() if line.startswith("base "))
-        assert base_line.endswith("downloaded")
+        assert "downloaded" in base_line
         assert "not downloaded" not in base_line
 
     def test_fetching_one_already_here_does_not_download_again(self, capsys, tmp_path):
@@ -259,9 +259,32 @@ class TestModels:
             tmp_path / "models--Systran--faster-whisper-tiny" / "snapshots" / "rev"
         )
         snapshot.mkdir(parents=True)
-        (snapshot / "model.bin").write_bytes(b"weights")
+        (snapshot / "model.bin").write_bytes(b"x" * 1024)
         code, out, _ = run(capsys, "models", "get", "tiny", "--cache", str(tmp_path))
         assert code == 0 and "already in" in out
+        assert "1 KB" in out, "it should say how much disk it is using"
+
+    def test_the_listing_says_how_big_a_downloaded_model_is(self, capsys, tmp_path):
+        snapshot = (
+            tmp_path / "models--Systran--faster-whisper-base" / "snapshots" / "rev"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.bin").write_bytes(b"x" * (3 * 1024 ** 2))
+        code, out, _ = run(capsys, "models", "--cache", str(tmp_path))
+        base_line = next(line for line in out.splitlines() if line.startswith("base "))
+        assert "downloaded, 3 MB" in base_line
+
+    def test_a_download_announces_its_size_so_it_does_not_look_stalled(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """A silent multi-gigabyte fetch is indistinguishable from a hang."""
+        from speech2text.engines.whisper import WhisperEngine
+
+        monkeypatch.setattr(WhisperEngine, "load", lambda self: None)
+        code, out, err = run(capsys, "models", "get", "large-v3", "--cache", str(tmp_path))
+        assert code == 0
+        assert "about ~3.1 GB" in err
+        assert "takes a while" in err
 
     def test_an_unknown_model_is_refused_with_the_real_list(self, capsys):
         with pytest.raises(SystemExit):

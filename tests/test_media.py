@@ -123,3 +123,19 @@ class TestHelpers:
     )
     def test_durations_read_like_a_clock(self, seconds, expected):
         assert media.format_duration(seconds) == expected
+
+
+class TestSizes:
+    @pytest.mark.parametrize(
+        "num_bytes,expected",
+        [
+            (0, "0 B"),
+            (512, "512 B"),
+            (1024, "1 KB"),
+            (150 * 1024 ** 2, "150 MB"),
+            (int(3.1 * 1024 ** 3), "3.1 GB"),
+            (-10, "0 B"),
+        ],
+    )
+    def test_sizes_read_the_way_a_person_writes_them(self, num_bytes, expected):
+        assert media.format_size(num_bytes) == expected

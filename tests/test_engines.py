@@ -203,6 +203,31 @@ class TestModelCacheLayout:
 
         assert model_size in _MODELS, f"{model_size} is not a model faster-whisper knows"
 
+    def test_the_size_on_disk_is_reported(self, tmp_path):
+        from speech2text.engines.whisper import downloaded_bytes
+
+        assert downloaded_bytes("base", tmp_path) == 0
+        snapshot = (
+            tmp_path / "models--Systran--faster-whisper-base" / "snapshots" / "rev"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.bin").write_bytes(b"x" * 2048)
+        assert downloaded_bytes("base", tmp_path) == 2048
+
+    def test_a_symlinked_snapshot_is_not_counted_twice(self, tmp_path):
+        """huggingface_hub stores one blob and symlinks it into the snapshot."""
+        from speech2text.engines.whisper import downloaded_bytes
+
+        repo = tmp_path / "models--Systran--faster-whisper-base"
+        blobs = repo / "blobs"
+        snapshot = repo / "snapshots" / "rev"
+        blobs.mkdir(parents=True)
+        snapshot.mkdir(parents=True)
+        blob = blobs / "abc123"
+        blob.write_bytes(b"x" * 4096)
+        (snapshot / "model.bin").symlink_to(blob)
+        assert downloaded_bytes("base", tmp_path) == 4096
+
     def test_a_local_folder_of_weights_is_accepted(self, tmp_path):
         from speech2text.engines.whisper import WhisperEngine
 
