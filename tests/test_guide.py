@@ -51,6 +51,9 @@ class TestCoverage:
     def test_the_model_cache_variable_is_documented(self):
         assert _CACHE_ENV in GUIDE
 
+    def test_fetching_a_model_in_advance_is_documented(self):
+        assert "speech2text models" in GUIDE
+
     @pytest.mark.parametrize(
         "variable",
         ["SPEECH2TEXT_GROQ_API_KEY", "SPEECH2TEXT_GEMINI_API_KEY",

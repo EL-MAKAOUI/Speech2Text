@@ -229,3 +229,60 @@ class TestFallbackChoice:
         code, _, err = run(capsys, "transcribe", str(tmp_path / "ghost.wav"),
                            "--engine", "cloud", "--fallback", "whisper", "--quiet")
         assert code == 1 and "no such file" in err, "the options parsed fine"
+
+
+class TestModels:
+    def test_it_lists_every_model_and_whether_it_is_here(self, capsys, tmp_path):
+        from speech2text.engines.whisper import MODEL_SIZES
+
+        code, out, _ = run(capsys, "models", "--cache", str(tmp_path))
+        assert code == 0
+        for size in MODEL_SIZES:
+            assert size in out, f"{size} is not listed"
+        assert out.count("not downloaded") == len(MODEL_SIZES)
+        assert str(tmp_path) in out
+        assert "SPEECH2TEXT_MODEL_CACHE" in out
+
+    def test_a_downloaded_model_is_reported_as_present(self, capsys, tmp_path):
+        snapshot = (
+            tmp_path / "models--Systran--faster-whisper-base" / "snapshots" / "rev"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.bin").write_bytes(b"weights")
+        code, out, _ = run(capsys, "models", "--cache", str(tmp_path))
+        base_line = next(line for line in out.splitlines() if line.startswith("base "))
+        assert base_line.endswith("downloaded")
+        assert "not downloaded" not in base_line
+
+    def test_fetching_one_already_here_does_not_download_again(self, capsys, tmp_path):
+        snapshot = (
+            tmp_path / "models--Systran--faster-whisper-tiny" / "snapshots" / "rev"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.bin").write_bytes(b"weights")
+        code, out, _ = run(capsys, "models", "get", "tiny", "--cache", str(tmp_path))
+        assert code == 0 and "already in" in out
+
+    def test_an_unknown_model_is_refused_with_the_real_list(self, capsys):
+        with pytest.raises(SystemExit):
+            main(["models", "get", "enormous"])
+        assert "invalid choice" in capsys.readouterr().err
+
+    def test_a_failed_download_explains_itself_rather_than_crashing(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        from speech2text.engines.whisper import WhisperEngine
+        from speech2text.engines.base import EngineUnavailable
+
+        def refuse(self):
+            raise EngineUnavailable("the weights come from huggingface.co")
+
+        monkeypatch.setattr(WhisperEngine, "load", refuse)
+        code, _, err = run(capsys, "models", "get", "tiny", "--cache", str(tmp_path))
+        assert code == 1 and "huggingface.co" in err
+
+    def test_the_quoted_sizes_cover_every_model_offered(self):
+        from speech2text.cli import APPROXIMATE_SIZES
+        from speech2text.engines.whisper import MODEL_SIZES
+
+        assert set(APPROXIMATE_SIZES) == set(MODEL_SIZES)

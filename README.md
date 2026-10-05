@@ -71,7 +71,8 @@ speech2text list                              # everything transcribed so far
 `whisper` runs entirely on your machine through
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper). The first use of
 each model size downloads it from huggingface.co; everything after that is
-offline. Bigger models are more accurate and slower — `tiny` and `base` for
+offline. Fetch one ahead of time with `speech2text models get <model>`, or
+`speech2text models` to see what is already on disk. Bigger models are more accurate and slower — `tiny` and `base` for
 quick notes, `small` and `medium` for real work, `large-v3` when the words
 matter. Point `SPEECH2TEXT_MODEL_CACHE` at a big disk, or at a cache copied
 from another machine, to skip the download.

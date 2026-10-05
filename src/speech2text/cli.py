@@ -21,7 +21,23 @@ from .engines import (
     create,
     describe_all,
 )
-from .engines.whisper import DEFAULT_MODEL, MODEL_SIZES
+from .engines.whisper import (
+    DEFAULT_MODEL,
+    MODEL_SIZES,
+    _CACHE_ENV as WHISPER_CACHE_ENV,
+)
+
+#: Roughly how large each download is, so a 3 GB one is not a surprise.
+#: Approximate and for guidance only; nothing depends on these numbers.
+APPROXIMATE_SIZES = {
+    "tiny": "~75 MB",
+    "base": "~145 MB",
+    "small": "~485 MB",
+    "medium": "~1.5 GB",
+    "large-v3": "~3.1 GB",
+    "large-v3-turbo": "~1.6 GB",
+    "distil-large-v3": "~1.5 GB",
+}
 from .pipeline import Cancelled, Progress, TranscribeOptions, transcribe_file
 from .model import Transcript
 
@@ -227,6 +243,39 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_models(args: argparse.Namespace) -> int:
+    """List Whisper models, or fetch one so later runs need no network."""
+    from .engines.whisper import WhisperEngine, model_cache_dir
+
+    cache = Path(args.cache).expanduser() if args.cache else model_cache_dir()
+
+    if getattr(args, "size", None):
+        engine = WhisperEngine(args.size, cache_dir=cache, device=args.device)
+        usable, reason = engine.availability()
+        if not usable:
+            return _fail(reason)
+        if engine.model_ready() and not args.force:
+            print(f"{args.size} is already in {cache}")
+            return 0
+        print(f"fetching {args.size} into {cache} …", file=sys.stderr)
+        try:
+            engine.load()
+        except EngineError as exc:
+            return _fail(str(exc))
+        print(f"{args.size} is ready. Later runs of this model need no network.")
+        return 0
+
+    print(f"Models are kept in {cache}")
+    print(f"Set {WHISPER_CACHE_ENV} to keep them somewhere else.\n")
+    print(f"{'model':<18}{'approx.':<10}{'state'}")
+    for size in MODEL_SIZES:
+        ready = WhisperEngine(size, cache_dir=cache).model_ready()
+        print(f"{size:<18}{APPROXIMATE_SIZES.get(size, '—'):<10}"
+              f"{'downloaded' if ready else 'not downloaded'}")
+    print("\nFetch one with:  speech2text models get <model>")
+    return 0
+
+
 def cmd_engines(args: argparse.Namespace) -> int:
     for described in describe_all():
         mark = "available" if described["available"] else "not available"
@@ -398,6 +447,26 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("-m", "--model")
     summary.add_argument("-o", "--output", help="write here instead of beside the bundle")
     summary.set_defaults(func=cmd_summarize)
+
+    models = sub.add_parser(
+        "models",
+        help="list or download the Whisper models",
+        description=(
+            "Whisper models download once and then run offline. With no "
+            "arguments this lists them and says which are already here."
+        ),
+    )
+    models.add_argument("--cache", help="look in this folder instead of the default")
+    models.set_defaults(func=cmd_models, size=None)
+    models_sub = models.add_subparsers(dest="models_command")
+    models_get = models_sub.add_parser("get", help="download a model now")
+    models_get.add_argument("size", choices=list(MODEL_SIZES))
+    models_get.add_argument("--cache")
+    models_get.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
+    models_get.add_argument(
+        "--force", action="store_true", help="fetch again even if it is here"
+    )
+    models_get.set_defaults(func=cmd_models)
 
     engines_command = sub.add_parser("engines", help="list recognizers and what is ready")
     engines_command.set_defaults(func=cmd_engines)

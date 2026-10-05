@@ -80,6 +80,14 @@ it from huggingface.co; after that it needs no network ever again. Larger
 models are more accurate and slower: `tiny` and `base` are for quick notes,
 `small` and `medium` for real work, `large-v3` when the words matter.
 
+A model can be fetched ahead of time rather than during the first
+transcription, which matters on a slow connection or before going offline:
+
+```bash
+speech2text models                 # what there is, and what is already here
+speech2text models get large-v3    # fetch one now
+```
+
 **Offline** ships its model inside the package, so it works on a machine with
 no network. It is English-only and markedly less accurate — it is there so the
 application always works, not because it is good.
