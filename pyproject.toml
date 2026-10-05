@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speech2text"
+version = "0.1.0"
+description = "Local-first speech transcription for any audio or video file"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+ui = ["PySide6>=6.8"]
+# The default recognizer. Downloads its model once, then runs offline.
+whisper = ["faster-whisper>=1.1"]
+# A fully offline English recognizer whose model ships inside the wheel, so it
+# works with no network at all. Much less accurate than whisper.
+sphinx = ["pocketsphinx>=5.0"]
+# Shared multi-key rotation, quota accounting and cost tracking, so keys and
+# usage are common to every project rather than copied per app.
+llmkit = ["llmkit[http]>=0.3"]
+
+[project.scripts]
+speech2text = "speech2text.cli:main"
+speech2text-gui = "speech2text.ui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
