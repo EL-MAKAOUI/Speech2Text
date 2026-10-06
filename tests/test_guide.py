@@ -15,9 +15,18 @@ import pytest
 from speech2text import export, languages, summarize
 from speech2text.engines import ENGINE_NAMES, create
 from speech2text.engines.whisper import MODEL_SIZES, _CACHE_ENV
-from speech2text.ui.guide_window import SHORTCUTS, TOPICS, as_html, as_markdown
+from speech2text.ui.guide_window import (
+    REVIEW_SHORTCUTS,
+    SHORTCUTS,
+    TOPICS,
+    as_html,
+    as_markdown,
+)
 
 GUIDE = as_markdown()
+#: The guide with its line wrapping collapsed. Prose assertions use this, so
+#: rewrapping a paragraph does not fail a test about what it says.
+GUIDE_FLAT = " ".join(GUIDE.split())
 REPOSITORY = Path(__file__).resolve().parents[1]
 GUIDE_FILE = REPOSITORY / "docs" / "guide.md"
 README = REPOSITORY / "README.md"
@@ -34,7 +43,7 @@ class TestCoverage:
         assert "CLOUD • AUDIO IS UPLOADED" in GUIDE
 
     def test_it_says_the_cloud_falls_back_so_nothing_is_lost(self):
-        assert "transcribed locally instead" in GUIDE
+        assert "transcribed locally instead" in GUIDE_FLAT
 
     @pytest.mark.parametrize("fmt", export.FORMATS)
     def test_every_export_format_is_listed(self, fmt):
@@ -48,6 +57,25 @@ class TestCoverage:
     def test_every_shortcut_is_listed(self, key):
         assert f"`{key}`" in GUIDE, f"{key} is not in the guide"
 
+    @pytest.mark.parametrize("key", sorted(REVIEW_SHORTCUTS))
+    def test_every_checking_shortcut_is_listed(self, key):
+        assert f"`{key}`" in GUIDE, f"{key} is not in the guide"
+
+    def test_checking_a_transcript_is_explained(self):
+        assert "Check it…" in GUIDE_FLAT
+        assert "Play as I move" in GUIDE_FLAT
+        assert "It's correct" in GUIDE_FLAT
+        assert "remembers where you were" in GUIDE_FLAT
+
+    def test_the_default_model_in_the_guide_is_the_real_one(self):
+        from speech2text.engines.whisper import DEFAULT_MODEL
+
+        assert f"`{DEFAULT_MODEL}` is the default" in GUIDE_FLAT
+
+    @pytest.mark.parametrize("variable", ["SPEECH2TEXT_MODEL", "SPEECH2TEXT_DEVICE"])
+    def test_the_default_overrides_are_documented(self, variable):
+        assert variable in GUIDE
+
     def test_the_model_cache_variable_is_documented(self):
         assert _CACHE_ENV in GUIDE
 
@@ -57,7 +85,7 @@ class TestCoverage:
     def test_where_a_model_runs_is_explained(self):
         """A GPU too small for the model is the first thing a laptop hits."""
         assert "`--device cpu`" in GUIDE and "`--device cuda`" in GUIDE
-        assert "laptop GPU" in GUIDE
+        assert "laptop GPU" in GUIDE_FLAT
 
     def test_the_missing_gpu_library_is_explained(self):
         """libcublas is the other way a GPU fails, and it reads as our bug."""
@@ -81,16 +109,16 @@ class TestCoverage:
         assert "while it runs" in GUIDE.lower()
 
     def test_the_promise_about_extensions_is_made(self):
-        lowered = GUIDE.lower()
+        lowered = GUIDE_FLAT.lower()
         assert "extension" in lowered
         assert "name of the file does not matter" in lowered
 
     def test_automatic_language_detection_is_explained_with_its_risk(self):
         assert "Detect automatically" in GUIDE
-        assert "music" in GUIDE, "the guide must say when detection goes wrong"
+        assert "music" in GUIDE_FLAT, "the guide must say when detection goes wrong"
 
     def test_the_number_of_languages_is_right(self):
-        stated = re.search(r"knows (\d+) languages", GUIDE)
+        stated = re.search(r"knows (\d+) languages", GUIDE_FLAT)
         assert stated, "the guide must say how many languages are supported"
         # Whisper's own 99, which is what the Standard engine offers.
         assert int(stated.group(1)) == 99
@@ -101,10 +129,10 @@ class TestCoverage:
             assert quoted in MODEL_SIZES, f"{quoted} is not a real model size"
 
     def test_the_summarizer_says_it_sends_text_and_not_audio(self):
-        assert "**text** (not the audio)" in GUIDE
+        assert "**text** (not the audio)" in GUIDE_FLAT
 
     def test_it_says_corrections_never_overwrite_the_recognition(self):
-        assert "never overwrites" in GUIDE or "never modified" in GUIDE
+        assert "never overwrites" in GUIDE_FLAT or "never modified" in GUIDE_FLAT
 
 
 class TestRendering:

@@ -16,7 +16,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import artifact, export, languages, media, summarize
 from ..engines import DEFAULT_ENGINE, EngineError, create, describe_all
-from ..engines.whisper import DEFAULT_MODEL, MODEL_SIZES
+from ..engines.whisper import MODEL_SIZES, default_device, default_model
 from ..model import Transcript
 from ..pipeline import Cancelled, Progress, Run, TranscribeOptions
 from .guide_window import SHORTCUTS, open_guide
@@ -131,7 +131,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     COLUMNS = ("Recording", "What it is", "Length", "Status", "Words", "To check")
 
-    def __init__(self, inputs: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        inputs: Sequence[str] = (),
+        settings: QtCore.QSettings | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Speech2Text")
         self.resize(1040, 760)
@@ -141,10 +145,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker: TranscribeWorker | None = None
         self._summary_worker: SummaryWorker | None = None
         self._summary_text = ""
-        self._output = DEFAULT_OUTPUT
+        self._review_window = None
+        # Injectable so a test can use its own file rather than the real one.
+        self._settings = settings or QtCore.QSettings("Speech2Text", "Speech2Text")
+        self._output = Path(
+            self._settings.value("output", str(DEFAULT_OUTPUT), type=str)
+        )
 
         self._build()
         self._bind_shortcuts()
+        self._restore_settings()
         self._refresh_engine_controls()
         self.add_files([Path(p) for p in inputs])
         self._update_buttons()
@@ -267,7 +277,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_box = QtWidgets.QComboBox()
         for size in MODEL_SIZES:
             self.model_box.addItem(size, size)
-        self.model_box.setCurrentIndex(max(0, self.model_box.findData(DEFAULT_MODEL)))
+        self.model_box.setCurrentIndex(max(0, self.model_box.findData(default_model())))
         self.model_box.setToolTip(
             "Bigger models are more accurate and slower. Each one downloads "
             "once, the first time it is used, and then works offline."
@@ -301,6 +311,24 @@ class MainWindow(QtWidgets.QMainWindow):
         container = QtWidgets.QWidget()
         container.setLayout(folder_row)
         grid.addWidget(container, 1, 3)
+
+        grid.addWidget(QtWidgets.QLabel("Run on"), 2, 2)
+        self.device_box = QtWidgets.QComboBox()
+        for label, value in (
+            ("Graphics card if it works", "auto"),
+            ("Processor only", "cpu"),
+            ("Graphics card only", "cuda"),
+        ):
+            self.device_box.addItem(label, value)
+        self.device_box.setCurrentIndex(
+            max(0, self.device_box.findData(default_device()))
+        )
+        self.device_box.setToolTip(
+            "A graphics card is faster when it can run the model at all. The "
+            "first setting tries it and uses the processor if it cannot, "
+            "which is the one to leave alone unless something is wrong."
+        )
+        grid.addWidget(self.device_box, 2, 3)
 
         self.timestamps_box = QtWidgets.QCheckBox("Include times in the text")
         self.timestamps_box.setToolTip(
@@ -375,6 +403,14 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.save_button.clicked.connect(self.save_as)
         row.addWidget(self.save_button)
+
+        self.review_button = QtWidgets.QPushButton("Check it…")
+        self.review_button.setToolTip(
+            "Listen to the recording segment by segment and fix what was "
+            "misheard. The least confident parts come first."
+        )
+        self.review_button.clicked.connect(self.open_review)
+        row.addWidget(self.review_button)
 
         self.folder_button = QtWidgets.QPushButton("Open folder")
         self.folder_button.setToolTip(
@@ -605,7 +641,8 @@ class MainWindow(QtWidgets.QMainWindow):
         engine = self.engine_box.currentData() or DEFAULT_ENGINE
         engine_options: dict = {}
         if engine == "whisper":
-            engine_options["model_size"] = self.model_box.currentData() or DEFAULT_MODEL
+            engine_options["model_size"] = self.model_box.currentData() or default_model()
+            engine_options["device"] = self.device_box.currentData() or default_device()
         elif engine == "cloud":
             engine_options["fallback"] = create("whisper")
         return TranscribeOptions(
@@ -781,6 +818,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"Saved {written}")
         return written
 
+    def open_review(self) -> None:
+        """Open the window for checking this transcript against the audio."""
+        bundle = self.current_bundle()
+        if bundle is None:
+            self.statusBar().showMessage("Select a transcribed recording first.")
+            return
+        from .review_window import ReviewWindow
+
+        kept = bundle.directory / "audio.wav"
+        window = ReviewWindow(
+            bundle.directory, self, audio=kept if kept.exists() else None
+        )
+        window.saved.connect(lambda: self._reload_bundle(bundle.directory))
+        window.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        window.show()
+        self._review_window = window
+
+    def _reload_bundle(self, directory: Path) -> None:
+        """Pick up corrections made in the review window."""
+        for row in range(self.files.topLevelItemCount()):
+            item = self.files.topLevelItem(row)
+            bundle = item.data(0, QtCore.Qt.UserRole + 1)
+            if bundle is None or bundle.directory != directory:
+                continue
+            try:
+                refreshed = artifact.refresh(directory)
+            except (OSError, ValueError, FileNotFoundError):
+                return
+            self._bundles[row] = refreshed
+            item.setData(0, QtCore.Qt.UserRole + 1, refreshed)
+            unresolved = len(refreshed.transcript.unresolved_issues())
+            item.setText(4, str(refreshed.transcript.word_count()))
+            item.setText(5, str(unresolved) if unresolved else "—")
+            if item is self.files.currentItem():
+                self._show_bundle(refreshed)
+            return
+
     def open_folder(self) -> None:
         bundle = self.current_bundle()
         if bundle is None:
@@ -851,11 +925,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.remove_button.setEnabled(has_files)
         self.clear_button.setEnabled(has_files)
         for button in (self.copy_button, self.save_button, self.folder_button,
-                       self.summary_button):
+                       self.review_button, self.summary_button):
             button.setEnabled(has_result)
         self.copy_summary_button.setEnabled(bool(self._summary_text))
 
+    # ---- remembering ----------------------------------------------------
+
+    def _restore_settings(self) -> None:
+        """Come back with the choices made last time, not the factory ones."""
+        read = self._settings.value
+        for box, key in (
+            (self.engine_box, "engine"),
+            (self.model_box, "model"),
+            (self.language_box, "language"),
+            (self.device_box, "device"),
+        ):
+            stored = read(key, None, type=str)
+            if stored is not None:
+                position = box.findData(stored)
+                if position >= 0:
+                    box.setCurrentIndex(position)
+        self.timestamps_box.setChecked(read("timestamps", False, type=bool))
+        self.output_label.setText(str(self._output))
+
+    def _remember_settings(self) -> None:
+        write = self._settings.setValue
+        write("engine", self.engine_box.currentData())
+        write("model", self.model_box.currentData())
+        write("language", self.language_box.currentData())
+        write("device", self.device_box.currentData())
+        write("timestamps", self.timestamps_box.isChecked())
+        write("output", str(self._output))
+        self._settings.sync()
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._remember_settings()
         if self._worker is not None and self._worker.isRunning():
             self._worker.stop()
             self._worker.wait(5000)

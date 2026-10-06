@@ -46,6 +46,9 @@ The Offline engine understands English only.
 it from huggingface.co; after that it needs no network ever again. Larger
 models are more accurate and slower: `tiny` and `base` are for quick notes,
 `small` and `medium` for real work, `large-v3` when the words matter.
+`small` is the default — the first size good enough to trust on ordinary
+speech while still fitting a laptop. `SPEECH2TEXT_MODEL` changes that, and
+the window remembers whatever was picked last.
 
 A model can be fetched ahead of time rather than during the first
 transcription, which matters on a slow connection or before going offline:
@@ -126,15 +129,42 @@ two-hour meeting works. The result is saved next to the transcript as a
 Markdown file and has its own copy button.
 
 ## Checking the result
-The engine marks segments it was unsure about, and the count appears beside
-the finished recording. That turns "check a two-hour recording" into a finite
-list: the least confident segments come first, so the likeliest mistakes get
-looked at first.
+Select a finished recording and press **Check it…**.
 
-Editing a segment never overwrites what the engine heard. The recognition is
-kept in `transcript.raw.txt` exactly as produced, your version goes in
-`transcript.txt`, and `transcript.json` holds both — so a correction can always
-be compared with the original, or undone.
+The window lists every segment with the time it happens at and how sure the
+recognizer was. Choosing one plays those few seconds and shows two boxes:
+what was heard, and your text. Listen, read, and either fix it or leave it.
+
+This is the fastest way to proofread, because a misheard word almost always
+*sounds* wrong before it *looks* wrong. **Play as I move** is on by default,
+so moving through segments plays each one: listen, read, fix, next.
+
+**Next to check** (`Ctrl+J`) jumps to the segment the recognizer was least
+sure about, anywhere in the recording. That is what turns "check a two-hour
+recording" into a finite list — work down the queue and the likeliest
+mistakes are seen first, instead of listening to all of it.
+
+| | |
+|---|---|
+| **Save correction** | store your text for this segment (`Ctrl+S`) |
+| **It's correct** | it was flagged but it is right; clears it, changes nothing (`Ctrl+K`) |
+| **Undo my change** | put back exactly what was heard |
+
+Use **It's correct** freely. A queue full of false alarms is worse than no
+queue, and marking something right is not the same as skipping it: moving on
+leaves a segment in the queue for later.
+
+Editing never overwrites what the engine heard. The recognition is kept in
+`transcript.raw.txt` exactly as produced, your version goes in
+`transcript.txt`, and `transcript.json` holds both — so a correction can
+always be compared with the original, or undone.
+
+Checking a long recording is not one sitting. Closing the window remembers
+where you were, and opening it again starts there rather than at the top.
+
+The audio is prepared when the window opens, so any format can be played. If
+the original recording has been moved or deleted since, the text can still be
+corrected; only playback is lost.
 
 ## Where the output goes
 Each recording gets a folder:
@@ -178,6 +208,8 @@ a good first choice: <https://console.groq.com/keys>. **Gemini** keys come from
 | variable | |
 |---|---|
 | `SPEECH2TEXT_MODEL_CACHE` | where Whisper models are kept |
+| `SPEECH2TEXT_MODEL` | which model to use when none is named |
+| `SPEECH2TEXT_DEVICE` | `auto`, `cpu` or `cuda` |
 | `SPEECH2TEXT_GROQ_API_KEY` | a key for Groq |
 | `SPEECH2TEXT_GEMINI_API_KEY` | a key for Gemini |
 | `SPEECH2TEXT_OPENAI_API_KEY` | a key for OpenAI |
@@ -186,6 +218,8 @@ Point `SPEECH2TEXT_MODEL_CACHE` at a big disk, or at a cache copied from
 another machine, and the first run needs no download.
 
 ## Keyboard shortcuts
+In the main window:
+
 | key | |
 |---|---|
 | `Ctrl+O` | Add files |
@@ -195,3 +229,15 @@ another machine, and the first run needs no download.
 | `Ctrl+S` | Save the text as a file |
 | `Esc` | Stop the current run |
 | `F1` | Open this guide |
+
+While checking a transcript:
+
+| key | |
+|---|---|
+| `Ctrl+Space` | Play the selected segment, or stop playing |
+| `Ctrl+R` | Play it again |
+| `Ctrl+S` | Save the correction |
+| `Ctrl+K` | Mark the segment correct as it is |
+| `Ctrl+Right` | Next segment |
+| `Ctrl+Left` | Previous segment |
+| `Ctrl+J` | Next segment that needs checking |

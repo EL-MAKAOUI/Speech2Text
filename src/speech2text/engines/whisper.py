@@ -22,15 +22,30 @@ from .base import (
     confidence_from_logprob,
 )
 
-#: Bigger is more accurate and slower. ``base`` is the compromise that fits a
-#: laptop; ``large-v3`` is the one to use when the words actually matter.
+#: Bigger is more accurate and slower. ``small`` is the first size that is
+#: good enough to trust on ordinary speech while still fitting a laptop, on
+#: its processor or in the couple of gigabytes a laptop GPU tends to have.
 MODEL_SIZES = (
     "tiny", "base", "small", "medium",
     "large-v3", "large-v3-turbo", "distil-large-v3",
 )
-DEFAULT_MODEL = "base"
+DEFAULT_MODEL = "small"
 
 _CACHE_ENV = "SPEECH2TEXT_MODEL_CACHE"
+_MODEL_ENV = "SPEECH2TEXT_MODEL"
+_DEVICE_ENV = "SPEECH2TEXT_DEVICE"
+
+
+def default_model() -> str:
+    """The model to use when none is named, which ``SPEECH2TEXT_MODEL`` sets."""
+    chosen = os.environ.get(_MODEL_ENV, "").strip()
+    return chosen if chosen in MODEL_SIZES else DEFAULT_MODEL
+
+
+def default_device() -> str:
+    """Where to run when nothing is said, which ``SPEECH2TEXT_DEVICE`` sets."""
+    chosen = os.environ.get(_DEVICE_ENV, "").strip().lower()
+    return chosen if chosen in ("auto", "cpu", "cuda") else "auto"
 
 
 def model_cache_dir() -> Path:
@@ -109,17 +124,17 @@ class WhisperEngine(SpeechEngine):
 
     def __init__(
         self,
-        model_size: str = DEFAULT_MODEL,
+        model_size: str | None = None,
         *,
-        device: str = "auto",
+        device: str | None = None,
         compute_type: str | None = None,
         beam_size: int = 5,
         vad_filter: bool = True,
         cache_dir: Path | None = None,
         cpu_threads: int = 0,
     ) -> None:
-        self.model_size = model_size
-        self.device = device
+        self.model_size = model_size or default_model()
+        self.device = device or default_device()
         self.compute_type = compute_type
         self.beam_size = beam_size
         self.vad_filter = vad_filter

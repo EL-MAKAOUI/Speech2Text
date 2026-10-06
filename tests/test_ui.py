@@ -24,14 +24,29 @@ from speech2text.pipeline import Progress  # noqa: E402
 from speech2text.ui.app import MainWindow  # noqa: E402
 
 
+@pytest.fixture
+def remembered_settings(tmp_path):
+    """A settings file of this test's own.
+
+    The window remembers what was chosen last time, so without this a test
+    that changes a setting would decide what later tests see — and would
+    write into whatever the person running the tests had chosen.
+    """
+    from PySide6 import QtCore
+
+    return QtCore.QSettings(
+        str(tmp_path / "settings.ini"), QtCore.QSettings.IniFormat
+    )
+
+
 @pytest.fixture(scope="session")
 def application():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
 @pytest.fixture
-def window(application, tmp_path):
-    made = MainWindow()
+def window(application, tmp_path, remembered_settings):
+    made = MainWindow(settings=remembered_settings)
     made._output = tmp_path / "out"
     made.output_label.setText(str(made._output))
     yield made
@@ -282,3 +297,70 @@ class TestSummaryTab:
         assert window.summary_view.toPlainText() == "the gist of it"
         assert window.copy_summary() is True
         assert application.clipboard().text() == "the gist of it"
+
+
+class TestOpeningTheChecker:
+    def test_checking_needs_a_finished_recording(self, window):
+        window.open_review()
+        assert "Select a transcribed recording" in window.statusBar().currentMessage()
+
+    def test_it_opens_on_the_selected_recording(self, finished_window):
+        finished_window.open_review()
+        checker = finished_window._review_window
+        try:
+            assert checker is not None
+            assert checker.directory == finished_window.current_bundle().directory
+            assert checker.segments.topLevelItemCount() == 3
+        finally:
+            if checker is not None:
+                checker.close()
+
+    def test_a_correction_made_there_shows_up_here(self, finished_window):
+        finished_window.open_review()
+        checker = finished_window._review_window
+        try:
+            checker.autoplay_box.setChecked(False)
+            checker.select(1, play=False)
+            checker.editor.setPlainText("Today we discuss testing.")
+            assert checker.save_correction() is True
+        finally:
+            checker.close()
+        assert "discuss testing" in finished_window.text_view.toPlainText()
+        assert finished_window.files.topLevelItem(0).text(5) == "—"
+
+
+class TestDefaultsAndMemory:
+    def test_the_default_model_is_the_engine_s_default(self, window):
+        from speech2text.engines.whisper import default_model
+
+        assert window.model_box.currentData() == default_model()
+
+    def test_where_to_run_can_be_chosen(self, window):
+        assert [
+            window.device_box.itemData(i) for i in range(window.device_box.count())
+        ] == ["auto", "cpu", "cuda"]
+
+    def test_the_device_reaches_the_engine_options(self, window):
+        window.engine_box.setCurrentIndex(window.engine_box.findData("whisper"))
+        window.device_box.setCurrentIndex(window.device_box.findData("cpu"))
+        assert window.options().engine_options["device"] == "cpu"
+
+    def test_choices_come_back_next_time(self, application, remembered_settings):
+        from speech2text.ui.app import MainWindow
+
+        first = MainWindow(settings=remembered_settings)
+        first.engine_box.setCurrentIndex(first.engine_box.findData("sphinx"))
+        first.language_box.setCurrentIndex(first.language_box.findData("fr"))
+        first.device_box.setCurrentIndex(first.device_box.findData("cpu"))
+        first.timestamps_box.setChecked(True)
+        first._remember_settings()
+        first.close()
+
+        second = MainWindow(settings=remembered_settings)
+        try:
+            assert second.engine_box.currentData() == "sphinx"
+            assert second.language_box.currentData() == "fr"
+            assert second.device_box.currentData() == "cpu"
+            assert second.timestamps_box.isChecked() is True
+        finally:
+            second.close()

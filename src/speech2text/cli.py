@@ -25,6 +25,8 @@ from .engines.whisper import (
     DEFAULT_MODEL,
     MODEL_SIZES,
     _CACHE_ENV as WHISPER_CACHE_ENV,
+    default_device,
+    default_model,
 )
 
 #: Roughly how large each download is, so a 3 GB one is not a surprise.
@@ -83,7 +85,7 @@ class _Printer:
 
 def _engine_options(args: argparse.Namespace) -> dict:
     if args.engine == "whisper":
-        options = {"model_size": args.model or DEFAULT_MODEL, "device": args.device}
+        options = {"model_size": args.model or default_model(), "device": args.device}
         if args.compute_type:
             options["compute_type"] = args.compute_type
         return options
@@ -369,6 +371,19 @@ def cmd_keys(args: argparse.Namespace) -> int:
     return _fail("say what to do with keys: list, add, or forget")
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    """Open the window for checking a transcript against the recording."""
+    try:
+        artifact.load(args.bundle)
+    except (FileNotFoundError, ValueError) as exc:
+        return _fail(str(exc))
+    try:
+        from .ui.review import main as review_main
+    except ImportError as exc:
+        return _fail(f"the window needs PySide6: pip install -e '.[ui]'  ({exc})")
+    return review_main(args.bundle)
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     try:
         from .ui.app import main as gui_main
@@ -417,11 +432,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"which recognizer to use (default: {DEFAULT_ENGINE})",
     )
     transcribe.add_argument(
-        "-m", "--model", help=f"engine model (whisper: {', '.join(MODEL_SIZES)})"
+        "-m", "--model",
+        help=f"engine model (whisper: {', '.join(MODEL_SIZES)}; "
+             f"default: {default_model()}, or $SPEECH2TEXT_MODEL)",
     )
     transcribe.add_argument(
-        "--device", default="auto", choices=("auto", "cpu", "cuda"),
-        help="where whisper runs (default: auto)",
+        "--device", default=default_device(), choices=("auto", "cpu", "cuda"),
+        help=f"where whisper runs (default: {default_device()}, "
+             f"or $SPEECH2TEXT_DEVICE)",
     )
     transcribe.add_argument("--compute-type", help="whisper precision, e.g. int8 or float16")
     transcribe.add_argument(
@@ -487,7 +505,9 @@ def build_parser() -> argparse.ArgumentParser:
     models_get = models_sub.add_parser("get", help="download a model now")
     models_get.add_argument("size", choices=list(MODEL_SIZES))
     models_get.add_argument("--cache")
-    models_get.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
+    models_get.add_argument(
+        "--device", default=default_device(), choices=("auto", "cpu", "cuda")
+    )
     models_get.add_argument(
         "--force", action="store_true", help="fetch again even if it is here"
     )
@@ -516,6 +536,17 @@ def build_parser() -> argparse.ArgumentParser:
     keys_forget.add_argument("-p", "--provider", required=True)
     keys_forget.set_defaults(func=cmd_keys)
     keys_command.set_defaults(func=cmd_keys, keys_command=None)
+
+    review = sub.add_parser(
+        "review",
+        help="listen to a transcript and correct it",
+        description=(
+            "Play each segment, compare it with what was written, and fix "
+            "what is wrong. Corrections never overwrite the recognition."
+        ),
+    )
+    review.add_argument("bundle", help="a bundle folder or its transcript.json")
+    review.set_defaults(func=cmd_review)
 
     gui = sub.add_parser("gui", help="open the window")
     gui.add_argument("inputs", nargs="*", help="files to add to the list")

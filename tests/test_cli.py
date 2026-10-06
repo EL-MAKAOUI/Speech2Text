@@ -312,3 +312,50 @@ class TestModels:
         from speech2text.engines.whisper import MODEL_SIZES
 
         assert set(APPROXIMATE_SIZES) == set(MODEL_SIZES)
+
+
+class TestReviewCommand:
+    def test_it_refuses_a_bundle_that_is_not_there(self, capsys, tmp_path):
+        code, _, err = run(capsys, "review", str(tmp_path / "nothing"))
+        assert code == 1 and "no transcript" in err
+
+    def test_it_is_offered_in_the_help(self, capsys):
+        code, out, _ = run(capsys)
+        assert "review" in out
+
+    def test_it_opens_the_window_for_a_real_bundle(self, capsys, sample_transcript, tmp_path, monkeypatch):
+        pytest.importorskip("PySide6")
+        from speech2text.ui import review as review_module
+
+        bundle = artifact.write_bundle(sample_transcript, tmp_path / "b")
+        opened: list[str] = []
+        monkeypatch.setattr(review_module, "main", lambda path: opened.append(str(path)) or 0)
+        code, _, _ = run(capsys, "review", str(bundle.directory))
+        assert code == 0 and opened == [str(bundle.directory)]
+
+
+class TestModelDefault:
+    def test_the_default_model_is_used_when_none_is_named(self, capsys, monkeypatch):
+        from speech2text.engines.whisper import default_model
+
+        monkeypatch.delenv("SPEECH2TEXT_MODEL", raising=False)
+        assert default_model() == "small"
+
+    def test_the_environment_can_change_it(self, monkeypatch):
+        from speech2text.engines.whisper import default_model
+
+        monkeypatch.setenv("SPEECH2TEXT_MODEL", "medium")
+        assert default_model() == "medium"
+
+    def test_a_model_that_does_not_exist_is_ignored(self, monkeypatch):
+        from speech2text.engines.whisper import default_model
+
+        monkeypatch.setenv("SPEECH2TEXT_MODEL", "enormous")
+        assert default_model() == "small"
+
+    @pytest.mark.parametrize("value,expected", [("cpu", "cpu"), ("CUDA", "cuda"), ("silly", "auto")])
+    def test_the_device_can_be_set_in_the_environment(self, monkeypatch, value, expected):
+        from speech2text.engines.whisper import default_device
+
+        monkeypatch.setenv("SPEECH2TEXT_DEVICE", value)
+        assert default_device() == expected

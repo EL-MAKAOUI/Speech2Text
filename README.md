@@ -32,8 +32,11 @@ either one.
 - **Optionally, something done to it.** A summary, the key points, decisions
   and action items, meeting minutes, an outline, a tidied-up version, or your
   own instruction — handed to a language model only if you ask for it.
-- **A review queue.** Segments the recognizer was unsure about are listed
-  least-confident first, so checking a long recording is a finite job.
+- **A way to check it.** **Check it…** opens the recording segment by
+  segment: play a few seconds, read what was written for it, fix it or mark
+  it right. The segments the recognizer was least sure about come first, so
+  proofreading a long recording is a finite job rather than a re-listen. It
+  remembers where you got to.
 
 ## Getting started
 
@@ -55,6 +58,7 @@ Or stay on the command line:
 ```bash
 speech2text transcribe recording.whatever
 speech2text transcribe lecture.mp4 --language ar --format docx --format srt
+speech2text review artifact/                  # listen to it and correct it
 speech2text info mystery-file                 # what is this, really?
 speech2text export artifact/ notes.docx
 speech2text list                              # everything transcribed so far
@@ -73,6 +77,13 @@ speech2text list                              # everything transcribed so far
 each model size downloads it from huggingface.co; everything after that is
 offline. Fetch one ahead of time with `speech2text models get <model>`, or
 `speech2text models` to see what is already on disk.
+
+`small` is the default: the first size good enough to trust on ordinary
+speech while still fitting a laptop, on its processor or in the couple of
+gigabytes a laptop graphics card tends to have. `tiny` and `base` are for
+quick notes, `medium` and `large-v3` for when the words matter and there is
+time. `SPEECH2TEXT_MODEL` and `SPEECH2TEXT_DEVICE` change the defaults, and
+the window remembers whatever was last chosen.
 
 A graphics card is used when there is one and it can actually run the model.
 Neither condition can be established by asking: a card does not report how
