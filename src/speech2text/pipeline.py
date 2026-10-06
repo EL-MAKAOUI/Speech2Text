@@ -89,6 +89,8 @@ class Run:
         self._stop = False
         self._started = 0.0
         self._partial: list[str] = []
+        #: Anything an engine said during the run that the person should see.
+        self.notes: list[str] = []
         self.progress = Progress()
 
     # ---- control --------------------------------------------------------
@@ -154,6 +156,7 @@ class Run:
                     languages=tuple(options.languages),
                     progress=self._recognition_progress(),
                     on_segment=self._collect_partial if options.write_partial else None,
+                    on_note=self._note,
                     initial_prompt=options.initial_prompt,
                 )
             )
@@ -185,6 +188,25 @@ class Run:
         def report(done: float) -> None:
             self._report("recognizing", done)
         return report
+
+    def _note(self, message: str) -> None:
+        """Pass an engine's remark on without moving the progress bar.
+
+        A note says something about the run, not about how far it has got, so
+        it must not send the bar backwards.
+        """
+        if message not in self.notes:
+            self.notes.append(message)
+        if self._stop:
+            raise Cancelled("stopped")
+        self.progress = Progress(
+            stage=self.progress.stage,
+            fraction=self.progress.fraction,
+            message=message,
+            elapsed=time.monotonic() - self._started if self._started else 0.0,
+        )
+        if self.on_progress is not None:
+            self.on_progress(self.progress)
 
     def _collect_partial(self, segment: Segment) -> None:
         """Keep the text readable while a long recording is still running.

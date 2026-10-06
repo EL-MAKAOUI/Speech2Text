@@ -20,6 +20,9 @@ ProgressFn = Callable[[float], None]
 #: Called with each segment as soon as it is recognized, so a long recording
 #: can be read before the run ends. Engines that cannot stream simply omit it.
 SegmentFn = Callable[[Segment], None]
+#: Called with something the person should be told while a run is going, such
+#: as an engine having to use the processor because the GPU was too small.
+NoteFn = Callable[[str], None]
 
 # Below this, a segment goes in the review queue. Whisper's own average token
 # probability sits near 0.9 on clean speech and falls off sharply on guesses.
@@ -43,6 +46,7 @@ class TranscriptionRequest:
     languages: Sequence[str] = ()       # empty means: detect it
     progress: ProgressFn | None = None
     on_segment: SegmentFn | None = None
+    on_note: NoteFn | None = None
     initial_prompt: str | None = None
 
     @property
@@ -59,6 +63,11 @@ class TranscriptionRequest:
         one at a time. Never required: the result is what counts."""
         if self.on_segment is not None:
             self.on_segment(segment)
+
+    def note(self, message: str) -> None:
+        """Say something the person should know while the run is going."""
+        if self.on_note is not None:
+            self.on_note(message)
 
 
 @dataclass

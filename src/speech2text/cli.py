@@ -276,9 +276,12 @@ def cmd_models(args: argparse.Namespace) -> int:
             engine.load()
         except EngineError as exc:
             return _fail(str(exc))
+        if engine.fell_back_to_cpu:
+            print(f"note: {engine.fell_back_to_cpu}", file=sys.stderr)
         on_disk = media.format_size(downloaded_bytes(args.size, cache))
+        where = f" It runs on the {engine.device_used}." if engine.device_used else ""
         print(
-            f"{args.size} is ready ({on_disk} in {cache}). "
+            f"{args.size} is ready ({on_disk} in {cache}).{where} "
             f"Later runs of this model need no network."
         )
         return 0

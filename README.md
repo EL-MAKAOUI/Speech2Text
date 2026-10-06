@@ -72,7 +72,13 @@ speech2text list                              # everything transcribed so far
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper). The first use of
 each model size downloads it from huggingface.co; everything after that is
 offline. Fetch one ahead of time with `speech2text models get <model>`, or
-`speech2text models` to see what is already on disk. Bigger models are more accurate and slower — `tiny` and `base` for
+`speech2text models` to see what is already on disk.
+
+A graphics card is used when there is one and the model fits in it. A laptop
+GPU usually holds only the smaller models, so a larger one is tried on the
+GPU and moved to the processor if it will not fit; the run says so, and the
+artifact records which device actually ran it. `--device cpu` or
+`--device cuda` forces the choice. Bigger models are more accurate and slower — `tiny` and `base` for
 quick notes, `small` and `medium` for real work, `large-v3` when the words
 matter. Point `SPEECH2TEXT_MODEL_CACHE` at a big disk, or at a cache copied
 from another machine, to skip the download.

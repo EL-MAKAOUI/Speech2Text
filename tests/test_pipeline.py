@@ -271,3 +271,46 @@ class TestReadingBeforeItFinishes:
 
         bundle = transcribe_file(tone_wav, tmp_path / "out", engine=Silent())
         assert bundle.text_path.read_text().strip() == "all at once"
+
+
+@requires_ffmpeg
+class TestEngineNotes:
+    """An engine can say something mid-run, such as having to use the CPU."""
+
+    @staticmethod
+    def _noting_engine(message: str):
+        from speech2text.engines.base import EngineResult, SpeechEngine
+        from speech2text.model import Segment
+
+        class Noting(SpeechEngine):
+            name = "noting"
+
+            def transcribe(self, request):
+                request.report(0.5)
+                request.note(message)
+                request.note(message)      # saying it twice must not repeat it
+                request.report(1.0)
+                return EngineResult(segments=[Segment(0, 0, 1, "text")], language="en")
+
+        return Noting()
+
+    def test_a_note_reaches_whoever_is_watching(self, tone_wav, tmp_path):
+        seen: list[str] = []
+        run = Run(
+            tone_wav, tmp_path / "out",
+            engine=self._noting_engine("running on the CPU"),
+            on_progress=lambda p: seen.append(p.message),
+        )
+        run.execute()
+        assert "running on the CPU" in seen
+        assert run.notes == ["running on the CPU"], "a repeated note is said once"
+
+    def test_a_note_does_not_send_the_progress_bar_backwards(self, tone_wav, tmp_path):
+        fractions: list[float] = []
+        Run(
+            tone_wav, tmp_path / "out",
+            engine=self._noting_engine("running on the CPU"),
+            on_progress=lambda p: fractions.append(p.fraction),
+        ).execute()
+        assert fractions == sorted(fractions), "a remark is not a step backwards"
+        assert fractions[-1] == 1.0

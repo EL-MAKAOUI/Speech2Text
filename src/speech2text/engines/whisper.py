@@ -109,6 +109,11 @@ class WhisperEngine(SpeechEngine):
         self.cpu_threads = cpu_threads
         self.cache_dir = Path(cache_dir) if cache_dir else model_cache_dir()
         self._model = None
+        #: Where the model actually ended up running, known after loading.
+        self.device_used: str | None = None
+        #: Set when the GPU could not hold the model and the CPU was used
+        #: instead, so the run can say so rather than appearing to just be slow.
+        self.fell_back_to_cpu: str | None = None
 
     # ---- availability ---------------------------------------------------
 
@@ -145,7 +150,14 @@ class WhisperEngine(SpeechEngine):
             return False
 
     def load(self):
-        """Load the model, downloading it the first time it is used."""
+        """Load the model, downloading it the first time it is used.
+
+        A laptop GPU is often too small for a large model, and there is no
+        portable way to ask how much memory it has: ctranslate2 does not
+        report it and torch is not a dependency here. So when the device was
+        chosen automatically, the GPU is tried and the CPU is used instead if
+        it will not fit. Slower is better than refusing to run.
+        """
         if self._model is not None:
             return self._model
         self.require_available()
@@ -153,24 +165,52 @@ class WhisperEngine(SpeechEngine):
 
         device, compute_type = self._resolve_device()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            self._model = WhisperModel(
-                self.model_size,
-                device=device,
-                compute_type=compute_type,
-                download_root=str(self.cache_dir),
-                cpu_threads=self.cpu_threads,
-            )
-        except Exception as exc:
-            raise self._load_failure(exc) from exc
-        return self._model
 
-    def _load_failure(self, exc: Exception) -> EngineError:
+        attempts = [(device, compute_type)]
+        if device == "cuda" and self.device == "auto":
+            attempts.append(("cpu", self.compute_type or "int8"))
+
+        failure: Exception | None = None
+        for attempt, (on_device, with_compute) in enumerate(attempts):
+            try:
+                model = WhisperModel(
+                    self.model_size,
+                    device=on_device,
+                    compute_type=with_compute,
+                    download_root=str(self.cache_dir),
+                    cpu_threads=self.cpu_threads,
+                )
+            except Exception as exc:
+                failure = exc
+                continue
+            self._model = model
+            self.device_used = on_device
+            if attempt:
+                self.fell_back_to_cpu = (
+                    f"the GPU could not load '{self.model_size}' "
+                    f"({_short(failure)}), so it is running on the CPU"
+                )
+            return self._model
+
+        raise self._load_failure(failure) from failure
+
+    def _load_failure(self, exc: Exception | None) -> EngineError:
         """Say what to do about it, rather than re-raising a library traceback."""
-        detail = str(exc).strip() or exc.__class__.__name__
+        detail = _short(exc)
         if self.model_ready():
+            advice = ""
+            if _is_out_of_memory(detail):
+                smaller = _smaller_than(self.model_size)
+                advice = (
+                    f"\nThere was not enough memory for this model. "
+                    f"Run it on the processor instead with '--device cpu', "
+                    f"or use a smaller model"
+                    + (f" such as '{smaller}'" if smaller else "")
+                    + "."
+                )
             return EngineError(
-                f"the {self.model_size} model is on disk but would not load: {detail}"
+                f"the {self.model_size} model is on disk but would not load: "
+                f"{detail}{advice}"
             )
         return EngineUnavailable(
             f"the '{self.model_size}' model is not downloaded yet and fetching it "
@@ -188,6 +228,10 @@ class WhisperEngine(SpeechEngine):
 
     def transcribe(self, request: TranscriptionRequest) -> EngineResult:
         model = self.load()
+        if self.fell_back_to_cpu:
+            # Running on the CPU looks like nothing but slowness unless it is
+            # said; the artifact records what actually ran.
+            request.note(self.fell_back_to_cpu)
         language = request.language
         try:
             raw_segments, info = model.transcribe(
@@ -250,8 +294,39 @@ class WhisperEngine(SpeechEngine):
             language=detected,
             language_probability=probability,
             model=self.model_size,
-            engine_version=_library_version(),
+            engine_version=self._describe_run(),
         )
+
+    def _describe_run(self) -> str:
+        """What actually ran, for the artifact: library, device, any fallback."""
+        parts = [_library_version() or "faster-whisper"]
+        if self.device_used:
+            parts.append(f"on {self.device_used}")
+        description = " ".join(parts)
+        if self.fell_back_to_cpu:
+            description += f" ({self.fell_back_to_cpu})"
+        return description
+
+
+def _short(exc: Exception | None) -> str:
+    if exc is None:  # pragma: no cover - only reached with no attempts
+        return "no reason given"
+    return str(exc).strip() or exc.__class__.__name__
+
+
+def _is_out_of_memory(detail: str) -> bool:
+    lowered = detail.lower()
+    return "out of memory" in lowered or "oom" in lowered.split()
+
+
+def _smaller_than(model_size: str) -> str | None:
+    """The next size down, to suggest when one will not fit."""
+    ladder = ("tiny", "base", "small", "medium", "large-v3")
+    if model_size in ladder:
+        position = ladder.index(model_size)
+        return ladder[position - 1] if position else None
+    # The large variants are all of a size; point at one that fits a laptop.
+    return "small"
 
 
 def _library_version() -> str | None:

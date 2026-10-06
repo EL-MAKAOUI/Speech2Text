@@ -234,3 +234,118 @@ class TestModelCacheLayout:
         local = tmp_path / "my-own-model"
         local.mkdir()
         assert WhisperEngine(str(local), cache_dir=tmp_path).model_ready() is True
+
+
+class TestDeviceFallback:
+    """A laptop GPU is often too small for a large model.
+
+    There is no portable way to ask a GPU how much memory it has, so the
+    engine tries it and uses the processor instead when it will not fit.
+    """
+
+    CUDA_OOM = "CUDA failed with error out of memory"
+
+    @staticmethod
+    def _fake_whisper(monkeypatch, fails_on=("cuda",)):
+        """Stand in for WhisperModel, failing on the named devices."""
+        import faster_whisper
+
+        attempted: list[tuple[str, str]] = []
+
+        class FakeModel:
+            def __init__(self, size, device="cpu", compute_type="int8", **kwargs):
+                attempted.append((device, compute_type))
+                if device in fails_on:
+                    raise RuntimeError(TestDeviceFallback.CUDA_OOM)
+
+        monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+        return attempted
+
+    def test_a_gpu_too_small_for_the_model_falls_back_to_the_processor(
+        self, tmp_path, monkeypatch
+    ):
+        from speech2text.engines.whisper import WhisperEngine
+
+        attempted = self._fake_whisper(monkeypatch)
+        engine = WhisperEngine("large-v3", device="auto", cache_dir=tmp_path)
+        monkeypatch.setattr(engine, "_cuda_available", lambda: True)
+
+        assert engine.load() is not None
+        assert [device for device, _ in attempted] == ["cuda", "cpu"]
+        assert engine.device_used == "cpu"
+        assert "could not load" in engine.fell_back_to_cpu
+        assert "out of memory" in engine.fell_back_to_cpu
+
+    def test_the_fallback_uses_a_precision_the_processor_supports(
+        self, tmp_path, monkeypatch
+    ):
+        from speech2text.engines.whisper import WhisperEngine
+
+        attempted = self._fake_whisper(monkeypatch)
+        engine = WhisperEngine("large-v3", device="auto", cache_dir=tmp_path)
+        monkeypatch.setattr(engine, "_cuda_available", lambda: True)
+        engine.load()
+        assert attempted[0][1] == "float16", "the GPU attempt uses half precision"
+        assert attempted[1][1] == "int8", "the processor attempt does not"
+
+    def test_a_working_gpu_is_used_and_nothing_is_said(self, tmp_path, monkeypatch):
+        from speech2text.engines.whisper import WhisperEngine
+
+        attempted = self._fake_whisper(monkeypatch, fails_on=())
+        engine = WhisperEngine("base", device="auto", cache_dir=tmp_path)
+        monkeypatch.setattr(engine, "_cuda_available", lambda: True)
+        engine.load()
+        assert [device for device, _ in attempted] == ["cuda"]
+        assert engine.device_used == "cuda"
+        assert engine.fell_back_to_cpu is None
+
+    def test_choosing_the_gpu_explicitly_is_not_overridden(self, tmp_path, monkeypatch):
+        """Asked for the GPU and told why it failed beats a silent downgrade."""
+        from speech2text.engines.whisper import WhisperEngine
+
+        attempted = self._fake_whisper(monkeypatch)
+        engine = WhisperEngine("large-v3", device="cuda", cache_dir=tmp_path)
+        snapshot = (
+            tmp_path / "models--Systran--faster-whisper-large-v3" / "snapshots" / "r"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.bin").write_bytes(b"weights")
+
+        with pytest.raises(Exception) as caught:
+            engine.load()
+        assert [device for device, _ in attempted] == ["cuda"]
+        assert "--device cpu" in str(caught.value)
+        assert "'medium'" in str(caught.value), "it should name a smaller model"
+
+    def test_the_processor_failing_is_reported_not_retried(self, tmp_path, monkeypatch):
+        from speech2text.engines.whisper import WhisperEngine
+
+        attempted = self._fake_whisper(monkeypatch, fails_on=("cpu",))
+        engine = WhisperEngine("base", device="cpu", cache_dir=tmp_path)
+        with pytest.raises(Exception):
+            engine.load()
+        assert len(attempted) == 1
+
+    def test_what_actually_ran_is_recorded_in_the_artifact(self, tmp_path, monkeypatch):
+        """Running on the processor must be visible, not just slow."""
+        from speech2text.engines.whisper import WhisperEngine
+
+        engine = WhisperEngine("large-v3", device="auto", cache_dir=tmp_path)
+        engine.device_used = "cpu"
+        engine.fell_back_to_cpu = "the GPU could not load 'large-v3' (out of memory)"
+        described = engine._describe_run()
+        assert "on cpu" in described
+        assert "out of memory" in described
+
+    @pytest.mark.parametrize(
+        "detail,expected",
+        [
+            ("CUDA failed with error out of memory", True),
+            ("cuDNN failed", False),
+            ("OOM when allocating", True),
+        ],
+    )
+    def test_running_out_of_memory_is_recognised(self, detail, expected):
+        from speech2text.engines.whisper import _is_out_of_memory
+
+        assert _is_out_of_memory(detail) is expected

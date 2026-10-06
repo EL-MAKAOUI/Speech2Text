@@ -54,6 +54,11 @@ class TestCoverage:
     def test_fetching_a_model_in_advance_is_documented(self):
         assert "speech2text models" in GUIDE
 
+    def test_where_a_model_runs_is_explained(self):
+        """A GPU too small for the model is the first thing a laptop hits."""
+        assert "`--device cpu`" in GUIDE and "`--device cuda`" in GUIDE
+        assert "laptop GPU" in GUIDE
+
     @pytest.mark.parametrize(
         "variable",
         ["SPEECH2TEXT_GROQ_API_KEY", "SPEECH2TEXT_GEMINI_API_KEY",

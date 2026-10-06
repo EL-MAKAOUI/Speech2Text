@@ -55,6 +55,16 @@ speech2text models                 # what there is, and what is already here
 speech2text models get large-v3    # fetch one now
 ```
 
+**Where it runs.** A graphics card is used when there is one and the model
+fits in it. A laptop GPU usually holds only the smaller models, and there is
+no reliable way to ask one how much memory it has, so the larger models are
+tried on the GPU and quietly moved to the processor if they will not fit —
+slower, but it runs, and the run says that it happened. Force one or the
+other with `--device cuda` or `--device cpu`.
+
+On the processor, `small` is the largest model most laptops are comfortable
+with. `large-v3` works but is several times slower than the recording itself.
+
 **Offline** ships its model inside the package, so it works on a machine with
 no network. It is English-only and markedly less accurate — it is there so the
 application always works, not because it is good.
