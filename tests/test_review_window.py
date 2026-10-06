@@ -228,7 +228,8 @@ class TestAudio:
     def test_playing_asks_for_the_segment_s_own_times(self, window, monkeypatch):
         asked: list[tuple[float, float]] = []
         monkeypatch.setattr(
-            window.player, "play", lambda start, end: asked.append((start, end)) or True
+            window.player, "play_segment",
+            lambda start, end: asked.append((start, end)) or True,
         )
         window.select(1, play=False)
         window.play()
@@ -333,3 +334,127 @@ class TestFindingTheAudio:
             assert made.save_correction() is True
         finally:
             made.close()
+
+
+class TestListeningStraightThrough:
+    """Most of a recording is fine, so it should be possible to just listen.
+
+    "Play on" keeps going past the end of a segment and moves the highlight
+    with the audio, so a long recording can be heard through and stopped
+    only where something is wrong.
+    """
+
+    def test_it_plays_onwards_rather_than_stopping_at_the_segment(self, window, monkeypatch):
+        asked: list[float] = []
+        monkeypatch.setattr(
+            window.player, "play_onwards", lambda start: asked.append(start) or True
+        )
+        window.select(1, play=False)
+        window.play_onwards()
+        assert asked == [5.0], "it starts at the segment and does not bound the end"
+        assert window._following is True
+
+    def test_the_highlight_follows_what_is_being_said(self, window, monkeypatch):
+        monkeypatch.setattr(window.player, "play_onwards", lambda start: True)
+        monkeypatch.setattr(type(window.player), "playing", property(lambda self: True))
+        window.select(0, play=False)
+        window.play_onwards()
+
+        window._on_position(6.0)
+        assert window.current_index == 1, "6s falls inside the second segment"
+        window._on_position(15.0)
+        assert window.current_index == 2
+
+    def test_following_does_not_start_a_competing_clip(self, window, monkeypatch):
+        """Moving the highlight must not itself play that segment."""
+        monkeypatch.setattr(window.player, "play_onwards", lambda start: True)
+        monkeypatch.setattr(type(window.player), "playing", property(lambda self: True))
+        played: list[tuple] = []
+        monkeypatch.setattr(
+            window.player, "play_segment", lambda start, end: played.append((start, end))
+        )
+        window.autoplay_box.setChecked(True)
+        window.play_onwards()
+        window._on_position(6.0)
+        assert played == [], "the continuous play must not be interrupted"
+
+    def test_which_segment_covers_a_moment(self, window):
+        assert window.segment_at(0.0) == 0
+        assert window.segment_at(6.0) == 1
+        assert window.segment_at(19.9) == 2
+        assert window.segment_at(1000.0) is None
+
+    def test_a_gap_between_segments_looks_ahead(self, application, tmp_path):
+        """Silence between segments should point at what is coming, not nothing."""
+        from speech2text import artifact as artifact_module
+
+        transcript = Transcript(
+            media=MediaIdentity("a.mp3", str(tmp_path / "a.mp3"), 1, 20.0, "mp3"),
+            segments=[Segment(0, 0.0, 2.0, "one"), Segment(1, 10.0, 12.0, "two")],
+        )
+        written = artifact_module.write_bundle(transcript, tmp_path / "gap")
+        made = ReviewWindow(written.directory)
+        try:
+            assert made.segment_at(5.0) == 1, "in the gap, the next one is coming"
+        finally:
+            made.close()
+
+    def test_reaching_the_end_stops_following(self, window):
+        window._following = True
+        window._on_clip_finished()
+        assert window._following is False
+        assert "end of the recording" in window.statusBar().currentMessage()
+
+    def test_stopping_is_offered_while_it_runs(self, window, monkeypatch):
+        monkeypatch.setattr(type(window.player), "playing", property(lambda self: True))
+        window._following = True
+        window._on_playing_changed()
+        assert window.follow_button.text() == "■ Stop"
+
+    def test_one_segment_at_a_time_is_still_possible(self, window, monkeypatch):
+        bounded: list[tuple[float, float]] = []
+        monkeypatch.setattr(
+            window.player, "play_segment",
+            lambda start, end: bounded.append((start, end)) or True,
+        )
+        window.select(1, play=False)
+        window.play()
+        assert bounded == [(5.0, 12.0)]
+        assert window._following is False
+
+
+class TestSpeed:
+    def test_the_offered_speeds_include_slower_and_faster(self, window):
+        from speech2text.ui.player import SPEEDS
+
+        offered = [window.speed_box.itemData(i) for i in range(window.speed_box.count())]
+        assert offered == list(SPEEDS)
+        assert min(offered) < 1.0 < max(offered)
+
+    def test_it_starts_at_normal_speed(self, window):
+        assert window.speed_box.currentData() == 1.0
+
+    def test_choosing_a_speed_reaches_the_player(self, window):
+        window.speed_box.setCurrentIndex(window.speed_box.findData(1.5))
+        assert window.player.speed == 1.5
+
+    def test_changing_speed_mid_listen_carries_on_from_where_it_was(self, window, monkeypatch):
+        monkeypatch.setattr(type(window.player), "playing", property(lambda self: True))
+        monkeypatch.setattr(type(window.player), "position", property(lambda self: 7.5))
+        monkeypatch.setattr(window.player, "stop", lambda: None)
+        resumed: list[float] = []
+        monkeypatch.setattr(
+            window.player, "play_onwards", lambda start: resumed.append(start) or True
+        )
+        window._following = True
+        window.speed_box.setCurrentIndex(window.speed_box.findData(1.5))
+        assert resumed == [7.5], "it should not jump back to the segment start"
+
+    def test_the_pitch_is_preserved(self):
+        """A faster read must stay listenable, not turn into a chipmunk."""
+        from pathlib import Path as _Path
+
+        from speech2text.ui.player import SegmentPlayer
+
+        args = SegmentPlayer.arguments(_Path("/a.wav"), 0, None, speed=1.5)
+        assert "atempo=1.500" in args

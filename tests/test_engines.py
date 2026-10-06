@@ -628,3 +628,108 @@ class TestGpuFailsDuringRecognition:
         with pytest.raises(EngineError, match="libcublas"):
             engine.transcribe(TranscriptionRequest(audio=Path(spoken_wav), duration=2.0))
         assert [step for step, _ in used] == ["load", "run", "load", "run"]
+
+
+@requires_whisper
+class TestFindingPipInstalledCudaLibraries:
+    """pip puts NVIDIA libraries where the dynamic loader does not look.
+
+    nvidia-cublas-cu12 unpacks into site-packages/nvidia/cublas/lib, so
+    ctranslate2's lookup of libcublas fails at the moment inference starts
+    even though the library is installed — which reads as a missing
+    dependency rather than a path problem.
+    """
+
+    def test_finding_nothing_is_not_a_failure(self, tmp_path, monkeypatch):
+        import site
+        import sysconfig
+
+        from speech2text.engines import whisper as whisper_module
+
+        monkeypatch.setattr(
+            sysconfig, "get_paths", lambda *a, **k: {"purelib": str(tmp_path)}
+        )
+        monkeypatch.setattr(site, "getsitepackages", lambda: [])
+        assert whisper_module.preload_cuda_libraries() == []
+
+    def test_it_looks_where_pip_puts_them(self, tmp_path, monkeypatch):
+        import sysconfig
+
+        from speech2text.engines import whisper as whisper_module
+
+        lib = tmp_path / "nvidia" / "cublas" / "lib"
+        lib.mkdir(parents=True)
+        (lib / "libcublas.so.12").write_bytes(b"not a real library")
+
+        attempted: list[str] = []
+
+        class FakeCdll:
+            def __init__(self, path, mode=0):
+                attempted.append(Path(path).name)
+
+        import ctypes
+        import site
+
+        monkeypatch.setattr(
+            sysconfig, "get_paths", lambda *a, **k: {"purelib": str(tmp_path)}
+        )
+        monkeypatch.setattr(site, "getsitepackages", lambda: [])
+        monkeypatch.setattr(ctypes, "CDLL", FakeCdll)
+        loaded = whisper_module.preload_cuda_libraries()
+        assert attempted == ["libcublas.so.12"]
+        assert loaded == ["libcublas.so.12"]
+
+    def test_a_library_that_will_not_open_is_skipped(self, tmp_path, monkeypatch):
+        """A real file that is not loadable must not stop the run."""
+        import sysconfig
+
+        from speech2text.engines import whisper as whisper_module
+
+        lib = tmp_path / "nvidia" / "cublas" / "lib"
+        lib.mkdir(parents=True)
+        (lib / "libcublas.so.12").write_bytes(b"definitely not an ELF object")
+        import site
+
+        monkeypatch.setattr(
+            sysconfig, "get_paths", lambda *a, **k: {"purelib": str(tmp_path)}
+        )
+        monkeypatch.setattr(site, "getsitepackages", lambda: [])
+        assert whisper_module.preload_cuda_libraries() == []
+
+    def test_it_runs_before_the_gpu_is_asked_for(self, tmp_path, monkeypatch):
+        from speech2text.engines import whisper as whisper_module
+        from speech2text.engines.whisper import WhisperEngine
+
+        order: list[str] = []
+        monkeypatch.setattr(
+            whisper_module, "preload_cuda_libraries",
+            lambda: order.append("preload") or [],
+        )
+        import faster_whisper
+
+        class FakeModel:
+            def __init__(self, size, device="cpu", **kwargs):
+                order.append(f"load:{device}")
+
+        monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+        engine = WhisperEngine("base", device="cuda", cache_dir=tmp_path)
+        engine.load()
+        assert order == ["preload", "load:cuda"]
+
+    def test_it_is_not_run_for_a_processor_only_load(self, tmp_path, monkeypatch):
+        from speech2text.engines import whisper as whisper_module
+        from speech2text.engines.whisper import WhisperEngine
+
+        called: list[str] = []
+        monkeypatch.setattr(
+            whisper_module, "preload_cuda_libraries",
+            lambda: called.append("preload") or [],
+        )
+        import faster_whisper
+
+        monkeypatch.setattr(
+            faster_whisper, "WhisperModel",
+            lambda *a, **k: type("M", (), {})(),
+        )
+        WhisperEngine("base", device="cpu", cache_dir=tmp_path).load()
+        assert called == []

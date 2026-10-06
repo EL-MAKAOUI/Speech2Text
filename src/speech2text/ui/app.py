@@ -194,6 +194,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._style_badge(cloud=False)
         row.addWidget(self.badge)
 
+        settings_button = QtWidgets.QPushButton("Settings…")
+        settings_button.setToolTip(
+            "Download models, choose what to use by default, and the "
+            "advanced dials."
+        )
+        settings_button.clicked.connect(self.open_settings)
+        row.addWidget(settings_button)
+
         guide = QtWidgets.QPushButton("? Guide")
         guide.setToolTip("How to transcribe, choose a language, and get the text out (F1).")
         guide.clicked.connect(lambda: open_guide(self))
@@ -641,8 +649,15 @@ class MainWindow(QtWidgets.QMainWindow):
         engine = self.engine_box.currentData() or DEFAULT_ENGINE
         engine_options: dict = {}
         if engine == "whisper":
+            read = self._settings.value
             engine_options["model_size"] = self.model_box.currentData() or default_model()
             engine_options["device"] = self.device_box.currentData() or default_device()
+            engine_options["beam_size"] = int(read("beam_size", 5, type=int))
+            engine_options["vad_filter"] = read("vad_filter", True, type=bool)
+            engine_options["cpu_threads"] = int(read("cpu_threads", 0, type=int))
+            compute = read("compute_type", "", type=str)
+            if compute:
+                engine_options["compute_type"] = compute
         elif engine == "cloud":
             engine_options["fallback"] = create("whisper")
         return TranscribeOptions(
@@ -818,6 +833,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"Saved {written}")
         return written
 
+    def open_settings(self) -> None:
+        """Models, defaults and the advanced dials, in one place."""
+        from .settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(self._settings, self)
+        dialog.changed.connect(self._apply_settings)
+        dialog.exec()
+
+    def _apply_settings(self) -> None:
+        """Take up what the settings window just saved."""
+        self._restore_settings()
+        self._refresh_engine_controls()
+        self.statusBar().showMessage("Settings saved.")
+
     def open_review(self) -> None:
         """Open the window for checking this transcript against the audio."""
         bundle = self.current_bundle()
@@ -830,6 +859,14 @@ class MainWindow(QtWidgets.QMainWindow):
         window = ReviewWindow(
             bundle.directory, self, audio=kept if kept.exists() else None
         )
+        window.autoplay_box.setChecked(
+            self._settings.value("review_autoplay", True, type=bool)
+        )
+        speed = window.speed_box.findData(
+            float(self._settings.value("review_speed", 1.0, type=float))
+        )
+        if speed >= 0:
+            window.speed_box.setCurrentIndex(speed)
         window.saved.connect(lambda: self._reload_bundle(bundle.directory))
         window.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         window.show()

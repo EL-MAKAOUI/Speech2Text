@@ -28,6 +28,7 @@ SHORTCUTS: dict[str, str] = {
 #: so neither window can bind a key the guide does not mention.
 REVIEW_SHORTCUTS: dict[str, str] = {
     "Ctrl+Space": "Play the selected segment, or stop playing",
+    "Ctrl+P": "Play on through the recording, or stop",
     "Ctrl+R": "Play it again",
     "Ctrl+S": "Save the correction",
     "Ctrl+K": "Mark the segment correct as it is",
@@ -97,7 +98,10 @@ speech while still fitting a laptop. `SPEECH2TEXT_MODEL` changes that, and
 the window remembers whatever was picked last.
 
 A model can be fetched ahead of time rather than during the first
-transcription, which matters on a slow connection or before going offline:
+transcription, which matters on a slow connection or before going offline.
+**Settings… › Models** lists every model with how large the download is,
+how much disk it is using, and what it is for; **Download** fetches one and
+**Remove** frees the disk again. The same from a terminal:
 
 ```bash
 speech2text models                 # what there is, and what is already here
@@ -116,7 +120,10 @@ speed. Force one or the other with `--device cuda` or `--device cpu`.
 
 If the GPU is wanted and reports a missing `libcublas` or `libcudnn`, those
 libraries are what is absent rather than anything about this application;
-NVIDIA publishes them as `nvidia-cublas-cu12` and `nvidia-cudnn-cu12`.
+NVIDIA publishes them as `nvidia-cublas-cu12` and `nvidia-cudnn-cu12`. Those
+packages install where the system loader does not look, so they are opened
+explicitly before the GPU is used — installing them is enough, with nothing
+to set.
 
 On the processor, `small` is the largest model most laptops are comfortable
 with. `large-v3` works but is several times slower than the recording itself.
@@ -194,6 +201,16 @@ This is the fastest way to proofread, because a misheard word almost always
 *sounds* wrong before it *looks* wrong. **Play as I move** is on by default,
 so moving through segments plays each one: listen, read, fix, next.
 
+**Play on** (`Ctrl+P`) is the other way to work, and usually the faster one.
+It keeps playing through the recording instead of stopping at the end of a
+segment, moving the highlight to each line as it is said. Most of a
+recording is usually right, so listen through it and stop only where
+something is wrong — then fix it and carry on.
+
+**Speed** plays back slower or faster without changing the pitch, so a
+faster read is still clear. Checking at 1.5× and slowing down for a
+difficult passage is a reasonable way to work.
+
 **Next to check** (`Ctrl+J`) jumps to the segment the recognizer was least
 sure about, anywhere in the recording. That is what turns "check a two-hour
 recording" into a finite list — work down the queue and the likeliest
@@ -264,6 +281,26 @@ A key is never written to a log, an error message, or an artifact.
 **Groq** has a generous free tier and runs Whisper server-side, which makes it
 a good first choice: <https://console.groq.com/keys>. **Gemini** keys come from
 <https://aistudio.google.com/apikey>.
+""",
+    ),
+    Topic(
+        "Settings",
+        """
+**Settings…** holds what is worth changing:
+
+- **Models** — what exists, what is downloaded, how much disk each is
+  using, and what each one is for. Download and remove them here.
+- **Recognition** — the recognizer, model and device new transcriptions use.
+  Under **Advanced**: the precision (`int8` is smaller and faster, `float16`
+  needs a graphics card), the search width (how many alternatives are kept
+  while deciding — 5 is usual, higher is slightly better and slower),
+  whether to skip silence, and how many cores to use.
+- **Checking** — whether each segment plays as it is selected, and the
+  playback speed.
+- **API keys** — which are found, shown masked, and somewhere to add one.
+
+The main window also remembers what was last chosen, so settings are worth
+visiting once rather than every session.
 """,
     ),
     Topic(

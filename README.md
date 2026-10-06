@@ -34,9 +34,17 @@ either one.
   own instruction — handed to a language model only if you ask for it.
 - **A way to check it.** **Check it…** opens the recording segment by
   segment: play a few seconds, read what was written for it, fix it or mark
-  it right. The segments the recognizer was least sure about come first, so
-  proofreading a long recording is a finite job rather than a re-listen. It
-  remembers where you got to.
+  it right. **Play on** keeps playing through the recording with the
+  highlight following the audio, so a recording with little wrong can be
+  listened through rather than clicked through, stopping only where it
+  matters. Playback runs from 0.5× to 2× without changing the pitch. The
+  segments the recognizer was least sure about come first, so proofreading a
+  long recording is a finite job rather than a re-listen, and it remembers
+  where you got to.
+- **A settings window.** Which models exist, which are downloaded and what
+  disk they are using, with a button to fetch or remove one. The recognizer,
+  model and device to use by default, and the advanced dials — precision,
+  search width, skipping silence, how many cores. API keys, shown masked.
 
 ## Getting started
 
@@ -80,7 +88,8 @@ offline. Fetch one ahead of time with `speech2text models get <model>`, or
 
 `small` is the default: the first size good enough to trust on ordinary
 speech while still fitting a laptop, on its processor or in the couple of
-gigabytes a laptop graphics card tends to have. `tiny` and `base` are for
+gigabytes a laptop graphics card tends to have. **Settings… › Models**
+downloads and removes them without going near a terminal. `tiny` and `base` are for
 quick notes, `medium` and `large-v3` for when the words matter and there is
 time. `SPEECH2TEXT_MODEL` and `SPEECH2TEXT_DEVICE` change the defaults, and
 the window remembers whatever was last chosen.

@@ -364,3 +364,45 @@ class TestDefaultsAndMemory:
             assert second.timestamps_box.isChecked() is True
         finally:
             second.close()
+
+
+class TestSettingsFromTheMainWindow:
+    def test_the_advanced_dials_reach_the_engine(self, window, remembered_settings):
+        remembered_settings.setValue("beam_size", 8)
+        remembered_settings.setValue("vad_filter", False)
+        remembered_settings.setValue("compute_type", "int8")
+        remembered_settings.setValue("cpu_threads", 3)
+        window.engine_box.setCurrentIndex(window.engine_box.findData("whisper"))
+
+        options = window.options().engine_options
+        assert options["beam_size"] == 8
+        assert options["vad_filter"] is False
+        assert options["compute_type"] == "int8"
+        assert options["cpu_threads"] == 3
+
+    def test_precision_left_unset_is_not_forced_on_the_engine(self, window, remembered_settings):
+        remembered_settings.setValue("compute_type", "")
+        window.engine_box.setCurrentIndex(window.engine_box.findData("whisper"))
+        assert "compute_type" not in window.options().engine_options
+
+    def test_saving_settings_is_taken_up_without_a_restart(self, window, remembered_settings):
+        remembered_settings.setValue("model", "tiny")
+        remembered_settings.setValue("device", "cpu")
+        window._apply_settings()
+        assert window.model_box.currentData() == "tiny"
+        assert window.device_box.currentData() == "cpu"
+        assert "Settings saved" in window.statusBar().currentMessage()
+
+    def test_the_checking_window_opens_with_the_saved_preferences(
+        self, finished_window, remembered_settings
+    ):
+        remembered_settings.setValue("review_autoplay", False)
+        remembered_settings.setValue("review_speed", 1.5)
+        finished_window.open_review()
+        checker = finished_window._review_window
+        try:
+            assert checker.autoplay_box.isChecked() is False
+            assert checker.speed_box.currentData() == 1.5
+            assert checker.player.speed == 1.5
+        finally:
+            checker.close()

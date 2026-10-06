@@ -87,6 +87,21 @@ class TestCoverage:
         assert "`--device cpu`" in GUIDE and "`--device cuda`" in GUIDE
         assert "laptop GPU" in GUIDE_FLAT
 
+    def test_listening_straight_through_is_explained(self):
+        """Most of a recording is right; it should not need clicking through."""
+        assert "Play on" in GUIDE_FLAT
+        assert "`Ctrl+P`" in GUIDE
+        assert "without changing the pitch" in GUIDE_FLAT
+
+    def test_the_settings_window_is_explained(self):
+        assert "Settings…" in GUIDE_FLAT
+        for setting in ("Models", "Recognition", "Checking", "API keys"):
+            assert setting in GUIDE_FLAT, setting
+        assert "search width" in GUIDE_FLAT.lower()
+
+    def test_downloading_a_model_from_the_window_is_explained(self):
+        assert "Settings… › Models" in GUIDE_FLAT
+
     def test_the_missing_gpu_library_is_explained(self):
         """libcublas is the other way a GPU fails, and it reads as our bug."""
         assert "libcublas" in GUIDE

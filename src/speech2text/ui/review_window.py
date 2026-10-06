@@ -19,7 +19,7 @@ from .. import artifact, media
 from ..export import clock
 from ..model import Transcript
 from .guide_window import REVIEW_SHORTCUTS
-from .player import SegmentPlayer, playback_available
+from .player import DEFAULT_SPEED, SPEEDS, SegmentPlayer, playback_available
 
 #: Below this a segment is worth a listen; it matches the review queue.
 _DOUBTFUL = 0.6
@@ -60,6 +60,11 @@ class ReviewWindow(QtWidgets.QMainWindow):
         self._decoder: DecodeWorker | None = None
         self._workspace: QtCore.QTemporaryDir | None = None
         self._loading = False
+        #: True while playing straight through rather than one segment.
+        self._following = False
+        #: Set while the highlight is moved by playback, so that moving it
+        #: does not itself start a new clip.
+        self._following_move = False
 
         self.setWindowTitle(f"Checking {self.transcript.media.name}")
         self.resize(1000, 720)
@@ -86,8 +91,10 @@ class ReviewWindow(QtWidgets.QMainWindow):
 
         self.setStatusBar(QtWidgets.QStatusBar())
         self.player.failed.connect(self._on_playback_failed)
-        self.player.started.connect(lambda: self.play_button.setText("■ Stop"))
-        self.player.stopped.connect(lambda: self.play_button.setText("▶ Play"))
+        self.player.started.connect(self._on_playing_changed)
+        self.player.stopped.connect(self._on_playing_changed)
+        self.player.position_changed.connect(self._on_position)
+        self.player.finished.connect(self._on_clip_finished)
 
     def _build_header(self) -> QtWidgets.QHBoxLayout:
         row = QtWidgets.QHBoxLayout()
@@ -141,6 +148,27 @@ class ReviewWindow(QtWidgets.QMainWindow):
         self.again_button.setToolTip("Play the same few seconds again (Ctrl+R).")
         self.again_button.clicked.connect(self.play)
         controls.addWidget(self.again_button)
+
+        self.follow_button = QtWidgets.QPushButton("▶▶ Play on")
+        self.follow_button.setToolTip(
+            "Keep playing from here through the rest of the recording, "
+            "highlighting each segment as it is said. Use this to listen "
+            "through and stop only where something is wrong (Ctrl+P)."
+        )
+        self.follow_button.clicked.connect(self.toggle_follow)
+        controls.addWidget(self.follow_button)
+
+        controls.addWidget(QtWidgets.QLabel("Speed"))
+        self.speed_box = QtWidgets.QComboBox()
+        for speed in SPEEDS:
+            self.speed_box.addItem(f"{speed:g}×", speed)
+        self.speed_box.setCurrentIndex(max(0, self.speed_box.findData(DEFAULT_SPEED)))
+        self.speed_box.setToolTip(
+            "How fast to play. The pitch stays the same, so a faster read is "
+            "still clear; slower helps on a difficult passage."
+        )
+        self.speed_box.currentIndexChanged.connect(self._on_speed_changed)
+        controls.addWidget(self.speed_box)
 
         self.position_label = QtWidgets.QLabel()
         self.position_label.setToolTip("Where this segment sits in the recording.")
@@ -218,6 +246,7 @@ class ReviewWindow(QtWidgets.QMainWindow):
     def _bind_shortcuts(self) -> None:
         for key, action in (
             ("Ctrl+Space", self.toggle_play),
+            ("Ctrl+P", self.toggle_follow),
             ("Ctrl+R", self.play),
             ("Ctrl+S", self.save_correction),
             ("Ctrl+K", self.accept_segment),
@@ -330,6 +359,8 @@ class ReviewWindow(QtWidgets.QMainWindow):
     def _set_playable(self, playable: bool, message: str = "") -> None:
         self.play_button.setEnabled(playable)
         self.again_button.setEnabled(playable)
+        self.follow_button.setEnabled(playable)
+        self.speed_box.setEnabled(playable)
         self.autoplay_box.setEnabled(playable)
         if message:
             self.statusBar().showMessage(message)
@@ -390,6 +421,10 @@ class ReviewWindow(QtWidgets.QMainWindow):
         )
         self.save_button.setEnabled(False)
         artifact.remember_review_position(self.directory, index)
+        if self._following_move or self.following:
+            # The highlight is following what is being played; starting
+            # another clip here would fight with it.
+            return
         if self.autoplay_box.isChecked() and self.autoplay_box.isEnabled():
             self.play()
 
@@ -406,17 +441,97 @@ class ReviewWindow(QtWidgets.QMainWindow):
     # ---- playing --------------------------------------------------------
 
     def play(self) -> None:
+        """Play just this segment and stop at the end of it."""
         index = self.current_index
         if index is None:
             return
+        self._following = False
         segment = self.transcript.segments[index]
-        self.player.play(segment.start, segment.end)
+        self.player.play_segment(segment.start, segment.end)
 
     def toggle_play(self) -> None:
         if self.player.playing:
             self.player.stop()
         else:
             self.play()
+
+    def play_onwards(self) -> None:
+        """Keep playing from here, following the text as it goes.
+
+        One continuous play rather than a clip per segment: a recording with
+        nothing wrong in it can be listened through without a gap at every
+        boundary, stopping only where something needs fixing.
+        """
+        index = self.current_index
+        if index is None:
+            index = 0
+            self.select(0, play=False)
+        segment = self.transcript.segments[index]
+        self._following = True
+        if not self.player.play_onwards(segment.start):
+            self._following = False
+
+    def toggle_follow(self) -> None:
+        if self.player.playing and self._following:
+            self.player.stop()
+        else:
+            self.play_onwards()
+
+    @property
+    def following(self) -> bool:
+        return self._following and self.player.playing
+
+    def _on_speed_changed(self) -> None:
+        speed = self.speed_box.currentData() or DEFAULT_SPEED
+        self.player.set_speed(speed)
+        if self.player.playing:
+            # Take effect now rather than at the next segment.
+            resume_from = self.player.position
+            following = self._following
+            self.player.stop()
+            if following:
+                self._following = True
+                self.player.play_onwards(resume_from)
+            else:
+                self.play()
+
+    @QtCore.Slot()
+    def _on_playing_changed(self) -> None:
+        playing = self.player.playing
+        self.play_button.setText("■ Stop" if playing and not self._following else "▶ Play")
+        self.follow_button.setText(
+            "■ Stop" if playing and self._following else "▶▶ Play on"
+        )
+        if not playing:
+            self._following = False
+
+    @QtCore.Slot(float)
+    def _on_position(self, position: float) -> None:
+        """Keep the highlight on whatever is being said."""
+        if not self._following:
+            return
+        index = self.segment_at(position)
+        if index is None or index == self.current_index:
+            return
+        self._following_move = True
+        try:
+            self.segments.setCurrentItem(self.segments.topLevelItem(index))
+        finally:
+            self._following_move = False
+
+    def segment_at(self, position: float) -> int | None:
+        """Which segment covers this moment, or the next one still to come."""
+        for segment in self.transcript.segments:
+            if segment.start <= position < segment.end:
+                return segment.index
+        upcoming = [s for s in self.transcript.segments if s.start >= position]
+        return upcoming[0].index if upcoming else None
+
+    @QtCore.Slot()
+    def _on_clip_finished(self) -> None:
+        if self._following:
+            self._following = False
+            self.statusBar().showMessage("Reached the end of the recording.")
 
     @QtCore.Slot(str)
     def _on_playback_failed(self, message: str) -> None:

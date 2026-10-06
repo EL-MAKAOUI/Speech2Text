@@ -116,6 +116,23 @@ def downloaded_bytes(model_size: str, cache: Path) -> int:
     return total
 
 
+def remove_model(model_size: str, cache: Path) -> int:
+    """Delete a downloaded model. Returns the bytes freed.
+
+    Models are large and a laptop runs out of disk before it runs out of
+    patience, so getting rid of one has to be possible from inside the
+    application rather than by hunting through a cache folder.
+    """
+    import shutil
+
+    freed = downloaded_bytes(model_size, cache)
+    for pattern in _cache_folders(model_size):
+        for candidate in cache.glob(pattern):
+            if candidate.is_dir():
+                shutil.rmtree(candidate, ignore_errors=True)
+    return freed if not _is_downloaded(model_size, cache) else 0
+
+
 class WhisperEngine(SpeechEngine):
     name = "whisper"
     title = "Standard (Whisper)"
@@ -219,6 +236,9 @@ class WhisperEngine(SpeechEngine):
 
         device, compute_type = self._resolve_device()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        if device == "cuda":
+            preload_cuda_libraries()
 
         attempts = [(device, compute_type)]
         if device == "cuda" and self.device == "auto":
@@ -436,6 +456,57 @@ def _read_samples(path: Path):
         )
     # WAV PCM is little-endian; say so rather than depending on the platform.
     return numpy.frombuffer(frames, dtype="<i2").astype(numpy.float32) / 32768.0
+
+
+def preload_cuda_libraries() -> list[str]:
+    """Make pip-installed NVIDIA libraries findable before anything needs them.
+
+    ``nvidia-cublas-cu12`` and its siblings unpack into
+    ``site-packages/nvidia/*/lib``, which the dynamic loader does not search.
+    ctranslate2 then fails to open libcublas at the moment inference starts,
+    reporting a library that is in fact installed. Opening them here with
+    RTLD_GLOBAL puts them in the process first, so that lookup succeeds.
+
+    Returns what was loaded. Finding nothing is normal and not a problem:
+    a system CUDA install is already on the loader's path.
+    """
+    import ctypes
+    import site
+    import sysconfig
+
+    roots: set[str] = set()
+    for name in ("purelib", "platlib"):
+        path = sysconfig.get_paths().get(name)
+        if path:
+            roots.add(path)
+    try:
+        roots.update(site.getsitepackages())
+    except AttributeError:  # pragma: no cover - virtualenvs without it
+        pass
+
+    candidates: list[Path] = []
+    for root in sorted(roots):
+        base = Path(root) / "nvidia"
+        if base.is_dir():
+            candidates.extend(sorted(base.glob("*/lib/*.so*")))
+
+    loaded: list[str] = []
+    remaining = candidates
+    # Two passes: these libraries depend on each other, and the one that
+    # fails first may succeed once its dependency is in.
+    for _ in range(2):
+        still_failing: list[Path] = []
+        for library in remaining:
+            try:
+                ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                still_failing.append(library)
+            else:
+                loaded.append(library.name)
+        if not still_failing:
+            break
+        remaining = still_failing
+    return loaded
 
 
 def _short(exc: Exception | None) -> str:
