@@ -55,12 +55,19 @@ speech2text models                 # what there is, and what is already here
 speech2text models get large-v3    # fetch one now
 ```
 
-**Where it runs.** A graphics card is used when there is one and the model
-fits in it. A laptop GPU usually holds only the smaller models, and there is
-no reliable way to ask one how much memory it has, so the larger models are
-tried on the GPU and quietly moved to the processor if they will not fit —
-slower, but it runs, and the run says that it happened. Force one or the
-other with `--device cuda` or `--device cpu`.
+**Where it runs.** A graphics card is used when there is one and it can
+actually run the model. A laptop GPU usually holds only the smaller models,
+and using one needs NVIDIA's cuBLAS and cuDNN libraries present as well as
+the card itself. Neither can be established by asking: a card does not
+report how much memory a model will need, and a missing library only shows
+itself once recognition starts. So the GPU is tried and the work moves to
+the processor if it will not run there — slower, but it finishes, and the
+run says that it happened rather than leaving it to be guessed from the
+speed. Force one or the other with `--device cuda` or `--device cpu`.
+
+If the GPU is wanted and reports a missing `libcublas` or `libcudnn`, those
+libraries are what is absent rather than anything about this application;
+NVIDIA publishes them as `nvidia-cublas-cu12` and `nvidia-cudnn-cu12`.
 
 On the processor, `small` is the largest model most laptops are comfortable
 with. `large-v3` works but is several times slower than the recording itself.

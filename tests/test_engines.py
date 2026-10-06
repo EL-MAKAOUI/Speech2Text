@@ -486,3 +486,145 @@ class TestWhisperAvailabilityMessages:
         assert "'av'" in reason and "libavcodec" in reason
         assert "force-reinstall" in reason
         assert "is not installed" not in reason
+
+
+@requires_whisper
+class TestGpuFailsDuringRecognition:
+    """A GPU can accept the model and still be unable to run it.
+
+    A missing cuBLAS or cuDNN only shows up once inference starts, part of
+    the way through the recording — "Library libcublas.so.12 is not found or
+    cannot be loaded". Loading succeeding is not proof the GPU works.
+    """
+
+    CUBLAS = "Library libcublas.so.12 is not found or cannot be loaded"
+
+    @staticmethod
+    def _model_that_runs_only_on(device_that_works, monkeypatch, used):
+        import faster_whisper
+
+        class FakeInfo:
+            duration = 2.0
+            language = "en"
+            language_probability = 0.98
+
+        class FakeSegment:
+            def __init__(self):
+                self.start, self.end = 0.0, 2.0
+                self.text = " recognized words "
+                self.avg_logprob, self.no_speech_prob, self.words = -0.1, 0.01, ()
+
+        class FakeModel:
+            def __init__(self, size, device="cpu", **kwargs):
+                self.device = device
+                used.append(("load", device))
+
+            def transcribe(self, audio, **kwargs):
+                used.append(("run", self.device))
+                if self.device != device_that_works:
+                    # Lazy, like the real one: the failure comes on iteration.
+                    def failing():
+                        yield from ()
+                        raise RuntimeError(TestGpuFailsDuringRecognition.CUBLAS)
+
+                    return failing(), FakeInfo()
+                return iter([FakeSegment()]), FakeInfo()
+
+        monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+
+    def _engine(self, tmp_path, monkeypatch, device="auto"):
+        from speech2text.engines.whisper import WhisperEngine
+
+        engine = WhisperEngine("small", device=device, cache_dir=tmp_path)
+        monkeypatch.setattr(engine, "_cuda_available", lambda: True)
+        return engine
+
+    def test_it_moves_to_the_processor_and_still_produces_the_text(
+        self, spoken_wav, tmp_path, monkeypatch
+    ):
+        from speech2text.engines.base import TranscriptionRequest
+
+        used: list[tuple[str, str]] = []
+        self._model_that_runs_only_on("cpu", monkeypatch, used)
+        engine = self._engine(tmp_path, monkeypatch)
+
+        result = engine.transcribe(
+            TranscriptionRequest(audio=Path(spoken_wav), duration=2.0)
+        )
+
+        assert [s.text for s in result.segments] == ["recognized words"]
+        assert used == [("load", "cuda"), ("run", "cuda"), ("load", "cpu"), ("run", "cpu")]
+        assert engine.device_used == "cpu"
+        assert "libcublas" in engine.fell_back_to_cpu
+        assert "on cpu" in result.engine_version
+
+    def test_the_person_is_told_it_moved(self, spoken_wav, tmp_path, monkeypatch):
+        from speech2text.engines.base import TranscriptionRequest
+
+        self._model_that_runs_only_on("cpu", monkeypatch, [])
+        engine = self._engine(tmp_path, monkeypatch)
+        notes: list[str] = []
+        engine.transcribe(
+            TranscriptionRequest(
+                audio=Path(spoken_wav), duration=2.0, on_note=notes.append
+            )
+        )
+        assert any("libcublas" in note for note in notes)
+
+    def test_a_working_gpu_is_not_second_guessed(self, spoken_wav, tmp_path, monkeypatch):
+        from speech2text.engines.base import TranscriptionRequest
+
+        used: list[tuple[str, str]] = []
+        self._model_that_runs_only_on("cuda", monkeypatch, used)
+        engine = self._engine(tmp_path, monkeypatch)
+        engine.transcribe(TranscriptionRequest(audio=Path(spoken_wav), duration=2.0))
+        assert used == [("load", "cuda"), ("run", "cuda")]
+        assert engine.fell_back_to_cpu is None
+
+    def test_choosing_the_gpu_explicitly_is_reported_not_overridden(
+        self, spoken_wav, tmp_path, monkeypatch
+    ):
+        from speech2text.engines.base import EngineError, TranscriptionRequest
+
+        used: list[tuple[str, str]] = []
+        self._model_that_runs_only_on("cpu", monkeypatch, used)
+        engine = self._engine(tmp_path, monkeypatch, device="cuda")
+        with pytest.raises(EngineError) as caught:
+            engine.transcribe(TranscriptionRequest(audio=Path(spoken_wav), duration=2.0))
+        assert "--device cpu" in str(caught.value)
+        assert [step for step, _ in used] == ["load", "run"], "it must not retry"
+
+    def test_a_failure_that_is_not_the_gpu_s_is_not_retried(
+        self, spoken_wav, tmp_path, monkeypatch
+    ):
+        import faster_whisper
+
+        from speech2text.engines.base import EngineError, TranscriptionRequest
+
+        attempts: list[str] = []
+
+        class FakeModel:
+            def __init__(self, size, device="cpu", **kwargs):
+                pass
+
+            def transcribe(self, audio, **kwargs):
+                attempts.append("run")
+                raise RuntimeError("the audio is malformed")
+
+        monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+        engine = self._engine(tmp_path, monkeypatch)
+        with pytest.raises(EngineError, match="malformed"):
+            engine.transcribe(TranscriptionRequest(audio=Path(spoken_wav), duration=2.0))
+        assert attempts == ["run"], "only a GPU problem earns a second attempt"
+
+    def test_the_processor_failing_too_is_reported_once(
+        self, spoken_wav, tmp_path, monkeypatch
+    ):
+        from speech2text.engines.base import EngineError, TranscriptionRequest
+
+        used: list[tuple[str, str]] = []
+        self._model_that_runs_only_on("nothing", monkeypatch, used)
+        engine = self._engine(tmp_path, monkeypatch)
+        with pytest.raises(EngineError, match="libcublas"):
+            engine.transcribe(TranscriptionRequest(audio=Path(spoken_wav), duration=2.0))
+        assert [step for step, _ in used] == ["load", "run", "load", "run"]

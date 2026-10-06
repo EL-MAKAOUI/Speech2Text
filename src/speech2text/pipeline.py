@@ -88,7 +88,10 @@ class Run:
         self._engine = engine
         self._stop = False
         self._started = 0.0
-        self._partial: list[str] = []
+        # Keyed by segment index, not appended: an engine that restarts the
+        # recognition (moving from the GPU to the processor) re-emits from
+        # zero, and the preview must be rewritten rather than doubled.
+        self._partial: dict[int, str] = {}
         #: Anything an engine said during the run that the person should see.
         self.notes: list[str] = []
         self.progress = Progress()
@@ -218,9 +221,10 @@ class Run:
         text = segment.text.strip()
         if not text:
             return
-        self._partial.append(text)
+        self._partial[segment.index] = text
         try:
-            artifact.write_partial(self.destination, "\n".join(self._partial))
+            ordered = [self._partial[key] for key in sorted(self._partial)]
+            artifact.write_partial(self.destination, "\n".join(ordered))
         except OSError:
             # Being unable to write the preview must never fail the run.
             pass

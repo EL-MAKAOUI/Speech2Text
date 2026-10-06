@@ -59,6 +59,10 @@ class TestCoverage:
         assert "`--device cpu`" in GUIDE and "`--device cuda`" in GUIDE
         assert "laptop GPU" in GUIDE
 
+    def test_the_missing_gpu_library_is_explained(self):
+        """libcublas is the other way a GPU fails, and it reads as our bug."""
+        assert "libcublas" in GUIDE
+
     @pytest.mark.parametrize(
         "variable",
         ["SPEECH2TEXT_GROQ_API_KEY", "SPEECH2TEXT_GEMINI_API_KEY",

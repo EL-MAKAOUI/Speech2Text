@@ -314,3 +314,49 @@ class TestEngineNotes:
         ).execute()
         assert fractions == sorted(fractions), "a remark is not a step backwards"
         assert fractions[-1] == 1.0
+
+
+@requires_ffmpeg
+class TestPreviewAfterARestart:
+    def test_an_engine_that_starts_over_rewrites_the_preview(self, tone_wav, tmp_path):
+        """Moving from the GPU to the processor re-emits from the first segment."""
+        from speech2text.engines.base import EngineResult, SpeechEngine
+        from speech2text.model import Segment
+
+        destination = tmp_path / "out"
+
+        class Restarting(SpeechEngine):
+            name = "restarting"
+
+            def transcribe(self, request):
+                # A first attempt that gets part way, then starts again.
+                request.emit(Segment(0, 0, 1, "first try one"))
+                request.emit(Segment(1, 1, 2, "first try two"))
+                request.note("starting over on the processor")
+                final = [
+                    Segment(0, 0, 1, "second try one"),
+                    Segment(1, 1, 2, "second try two"),
+                    Segment(2, 2, 3, "second try three"),
+                ]
+                for segment in final:
+                    request.emit(segment)
+                return EngineResult(segments=final, language="en")
+
+        captured: list[str] = []
+
+        class Watching(Restarting):
+            def transcribe(self, request):
+                result = Restarting.transcribe(self, request)
+                captured.append(
+                    (destination / artifact.TRANSCRIPT_PARTIAL_TXT).read_text()
+                )
+                return result
+
+        bundle = transcribe_file(tone_wav, destination, engine=Watching())
+
+        preview = captured[0]
+        assert "first try" not in preview, "the abandoned attempt must not linger"
+        assert preview.count("second try one") == 1
+        assert bundle.text_path.read_text().strip().splitlines() == [
+            "second try one", "second try two", "second try three"
+        ]

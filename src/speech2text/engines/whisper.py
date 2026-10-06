@@ -128,6 +128,7 @@ class WhisperEngine(SpeechEngine):
         self._model = None
         #: Where the model actually ended up running, known after loading.
         self.device_used: str | None = None
+        self._force_cpu = False
         #: Set when the GPU could not hold the model and the CPU was used
         #: instead, so the run can say so rather than appearing to just be slow.
         self.fell_back_to_cpu: str | None = None
@@ -162,10 +163,21 @@ class WhisperEngine(SpeechEngine):
 
     def _resolve_device(self) -> tuple[str, str]:
         device = self.device
-        if device == "auto":
+        if self._force_cpu:
+            device = "cpu"
+        elif device == "auto":
             device = "cuda" if self._cuda_available() else "cpu"
-        compute = self.compute_type or ("float16" if device == "cuda" else "int8")
-        return device, compute
+        return device, self._compute_for(device)
+
+    def _compute_for(self, device: str) -> str:
+        """A precision the device can actually use.
+
+        float16 is a GPU precision; asking a processor for it fails, so a
+        run that moves to the processor moves to int8 with it.
+        """
+        if device == "cpu":
+            return self.compute_type if self.compute_type not in (None, "float16") else "int8"
+        return self.compute_type or "float16"
 
     @staticmethod
     def _cuda_available() -> bool:
@@ -195,7 +207,7 @@ class WhisperEngine(SpeechEngine):
 
         attempts = [(device, compute_type)]
         if device == "cuda" and self.device == "auto":
-            attempts.append(("cpu", self.compute_type or "int8"))
+            attempts.append(("cpu", self._compute_for("cpu")))
 
         failure: Exception | None = None
         for attempt, (on_device, with_compute) in enumerate(attempts):
@@ -212,6 +224,8 @@ class WhisperEngine(SpeechEngine):
                 continue
             self._model = model
             self.device_used = on_device
+            if on_device == "cpu":
+                self._force_cpu = True
             if attempt:
                 self.fell_back_to_cpu = (
                     f"the GPU could not load '{self.model_size}' "
@@ -254,11 +268,56 @@ class WhisperEngine(SpeechEngine):
     # ---- recognition ----------------------------------------------------
 
     def transcribe(self, request: TranscriptionRequest) -> EngineResult:
-        model = self.load()
+        """Recognize the speech, moving to the processor if the GPU fails.
+
+        A GPU can accept the model and still be unable to run it — a missing
+        cuBLAS or cuDNN shows up only once inference starts, part-way through
+        the recording. Loading succeeding is therefore not proof the GPU
+        works, so the same fallback has to cover the recognition itself.
+        """
+        self.load()
         if self.fell_back_to_cpu:
             # Running on the CPU looks like nothing but slowness unless it is
             # said; the artifact records what actually ran.
             request.note(self.fell_back_to_cpu)
+        try:
+            return self._recognize(request)
+        except Exception as exc:
+            if not self._may_retry_on_cpu(exc):
+                raise self._recognition_failure(exc) from exc
+            self.fell_back_to_cpu = (
+                f"the GPU could not run '{self.model_size}' ({_short(exc)}), "
+                f"so it is running on the CPU"
+            )
+            self._force_cpu = True
+            self._model = None
+            self.load()
+            request.note(self.fell_back_to_cpu)
+            try:
+                return self._recognize(request)
+            except Exception as retry:
+                raise self._recognition_failure(retry) from retry
+
+    def _may_retry_on_cpu(self, exc: Exception) -> bool:
+        """Whether this failure is the GPU's, and the processor is allowed."""
+        return (
+            self.device == "auto"
+            and self.device_used == "cuda"
+            and _is_gpu_problem(_short(exc))
+        )
+
+    def _recognition_failure(self, exc: Exception) -> EngineError:
+        detail = _short(exc)
+        advice = ""
+        if _is_gpu_problem(detail) and self.device != "cpu":
+            advice = (
+                "\nThe graphics card could not run it. Use '--device cpu' to "
+                "stay off the GPU."
+            )
+        return EngineError(f"whisper could not read the audio: {detail}{advice}")
+
+    def _recognize(self, request: TranscriptionRequest) -> EngineResult:
+        model = self._model
         language = request.language
         try:
             raw_segments, info = model.transcribe(
@@ -269,8 +328,11 @@ class WhisperEngine(SpeechEngine):
                 word_timestamps=True,
                 initial_prompt=request.initial_prompt,
             )
-        except Exception as exc:  # pragma: no cover - library-specific
-            raise EngineError(f"whisper could not read the audio: {exc}") from exc
+        except EngineError:
+            raise
+        except Exception:
+            # Handled by transcribe(), which may retry this on the processor.
+            raise
 
         total = getattr(info, "duration", None) or request.duration or 0.0
         detected = getattr(info, "language", None)
@@ -370,6 +432,15 @@ def _short(exc: Exception | None) -> str:
 def _is_out_of_memory(detail: str) -> bool:
     lowered = detail.lower()
     return "out of memory" in lowered or "oom" in lowered.split()
+
+
+#: Words that mark a failure as the graphics card's rather than the audio's.
+_GPU_WORDS = ("cuda", "cublas", "cudnn", "cusparse", "nvidia", "gpu", "out of memory")
+
+
+def _is_gpu_problem(detail: str) -> bool:
+    lowered = detail.lower()
+    return any(word in lowered for word in _GPU_WORDS)
 
 
 def _smaller_than(model_size: str) -> str | None:
