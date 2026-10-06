@@ -22,12 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 HAS_ESPEAK = bool(shutil.which("espeak-ng") or shutil.which("espeak"))
 HAS_SPHINX = importlib.util.find_spec("pocketsphinx") is not None
+HAS_WHISPER = importlib.util.find_spec("faster_whisper") is not None
 
 requires_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg is not installed")
 requires_espeak = pytest.mark.skipif(not HAS_ESPEAK, reason="espeak-ng is not installed")
 # The optional recognizers are extras, so a minimal install must skip, not fail.
 requires_sphinx = pytest.mark.skipif(
     not HAS_SPHINX, reason="pocketsphinx is not installed"
+)
+requires_whisper = pytest.mark.skipif(
+    not HAS_WHISPER, reason="faster-whisper is not installed"
 )
 
 SPOKEN_SENTENCE = (

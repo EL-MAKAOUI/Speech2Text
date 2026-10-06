@@ -7,9 +7,11 @@ is uploaded, and no network is needed after the first run.
 from __future__ import annotations
 
 import os
+import wave
 from dataclasses import replace
 from pathlib import Path
 
+from ..media import TARGET_SAMPLE_RATE
 from ..model import Segment, Word
 from .base import (
     EngineError,
@@ -73,14 +75,29 @@ def _is_downloaded(model_size: str, cache: Path) -> bool:
 
 
 def downloaded_bytes(model_size: str, cache: Path) -> int:
-    """How much disk a model's weights take, or 0 when it is not here."""
+    """How much disk a model's weights take, or 0 when it is not here.
+
+    A cached model is the same bytes reachable by more than one name: a
+    snapshot entry is usually a link to a blob, and the blob may not even sit
+    inside the folder being measured. Following the links and counting each
+    underlying file once gets the real figure whatever layout the hub uses.
+    """
     total = 0
+    counted: set[tuple[int, int]] = set()
     for pattern in _cache_folders(model_size):
         for candidate in cache.glob(pattern):
             for item in candidate.rglob("*"):
-                # Snapshots are symlinks into blobs; count each blob once.
-                if item.is_file() and not item.is_symlink():
-                    total += item.stat().st_size
+                try:
+                    if not item.is_file():        # follows links; skips broken ones
+                        continue
+                    info = item.stat()
+                except OSError:  # pragma: no cover - unreadable entry
+                    continue
+                identity = (info.st_dev, info.st_ino)
+                if identity in counted:
+                    continue
+                counted.add(identity)
+                total += info.st_size
     return total
 
 
@@ -120,10 +137,20 @@ class WhisperEngine(SpeechEngine):
     def availability(self) -> tuple[bool, str]:
         try:
             import faster_whisper  # noqa: F401
-        except ImportError:
+        except ImportError as exc:
+            # faster-whisper pulls in ctranslate2, tokenizers and PyAV. When
+            # one of those is the thing that is broken, saying "it is not
+            # installed" sends someone off to fix the wrong problem.
+            missing = getattr(exc, "name", None) or ""
+            if missing in ("", "faster_whisper"):
+                return False, (
+                    "faster-whisper is not installed. Install it with:\n"
+                    "    pip install -e '.[whisper]'"
+                )
             return False, (
-                "faster-whisper is not installed. Install it with:\n"
-                "    pip install -e '.[whisper]'"
+                f"faster-whisper cannot load: {missing!r} is missing or broken "
+                f"({exc}).\nReinstalling usually fixes it:\n"
+                f"    pip install --force-reinstall -e '.[whisper]'"
             )
         return True, ""
 
@@ -235,7 +262,7 @@ class WhisperEngine(SpeechEngine):
         language = request.language
         try:
             raw_segments, info = model.transcribe(
-                str(request.audio),
+                _read_samples(request.audio),
                 language=language,
                 beam_size=self.beam_size,
                 vad_filter=self.vad_filter,
@@ -306,6 +333,32 @@ class WhisperEngine(SpeechEngine):
         if self.fell_back_to_cpu:
             description += f" ({self.fell_back_to_cpu})"
         return description
+
+
+def _read_samples(path: Path):
+    """The decoded audio as the float32 samples the model expects.
+
+    The pipeline has already produced 16 kHz mono 16-bit PCM with ffmpeg, so
+    the samples are handed over directly rather than giving faster-whisper a
+    path and letting it decode the file a second time with PyAV. That skips
+    a redundant decode, and it keeps this engine clear of PyAV's API, which
+    has changed under faster-whisper more than once.
+    """
+    import numpy
+
+    with wave.open(str(path), "rb") as handle:
+        channels = handle.getnchannels()
+        width = handle.getsampwidth()
+        rate = handle.getframerate()
+        frames = handle.readframes(handle.getnframes())
+
+    if channels != 1 or width != 2 or rate != TARGET_SAMPLE_RATE:
+        raise EngineError(
+            f"expected {TARGET_SAMPLE_RATE} Hz mono 16-bit audio, got "
+            f"{rate} Hz, {channels} channel(s), {width * 8}-bit"
+        )
+    # WAV PCM is little-endian; say so rather than depending on the platform.
+    return numpy.frombuffer(frames, dtype="<i2").astype(numpy.float32) / 32768.0
 
 
 def _short(exc: Exception | None) -> str:

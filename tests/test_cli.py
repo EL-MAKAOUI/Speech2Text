@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import requires_ffmpeg, requires_sphinx
+from conftest import requires_ffmpeg, requires_sphinx, requires_whisper
 
 from speech2text import artifact
 from speech2text.cli import main
@@ -254,6 +254,7 @@ class TestModels:
         assert "downloaded" in base_line
         assert "not downloaded" not in base_line
 
+    @requires_whisper
     def test_fetching_one_already_here_does_not_download_again(self, capsys, tmp_path):
         snapshot = (
             tmp_path / "models--Systran--faster-whisper-tiny" / "snapshots" / "rev"
@@ -274,6 +275,7 @@ class TestModels:
         base_line = next(line for line in out.splitlines() if line.startswith("base "))
         assert "downloaded, 3 MB" in base_line
 
+    @requires_whisper
     def test_a_download_announces_its_size_so_it_does_not_look_stalled(
         self, capsys, tmp_path, monkeypatch
     ):
@@ -291,6 +293,7 @@ class TestModels:
             main(["models", "get", "enormous"])
         assert "invalid choice" in capsys.readouterr().err
 
+    @requires_whisper
     def test_a_failed_download_explains_itself_rather_than_crashing(
         self, capsys, tmp_path, monkeypatch
     ):

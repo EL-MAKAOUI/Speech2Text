@@ -6,7 +6,12 @@ import math
 from pathlib import Path
 
 import pytest
-from conftest import requires_espeak, requires_ffmpeg, requires_sphinx
+from conftest import (
+    requires_espeak,
+    requires_ffmpeg,
+    requires_sphinx,
+    requires_whisper,
+)
 
 from speech2text import engines
 from speech2text.engines import base
@@ -169,6 +174,7 @@ class TestSphinxAdapter:
         assert len(words) <= 4, f"a sine tone produced {words!r}"
 
 
+@requires_whisper
 class TestModelCacheLayout:
     """Each size comes from its own repository, and they are not uniformly named."""
 
@@ -215,7 +221,7 @@ class TestModelCacheLayout:
         assert downloaded_bytes("base", tmp_path) == 2048
 
     def test_a_symlinked_snapshot_is_not_counted_twice(self, tmp_path):
-        """huggingface_hub stores one blob and symlinks it into the snapshot."""
+        """huggingface_hub stores one blob and links it into the snapshot."""
         from speech2text.engines.whisper import downloaded_bytes
 
         repo = tmp_path / "models--Systran--faster-whisper-base"
@@ -228,6 +234,33 @@ class TestModelCacheLayout:
         (snapshot / "model.bin").symlink_to(blob)
         assert downloaded_bytes("base", tmp_path) == 4096
 
+    def test_weights_reached_only_through_a_link_are_still_counted(self, tmp_path):
+        """The blob can live outside the folder, so the size must follow links."""
+        from speech2text.engines.whisper import downloaded_bytes
+
+        elsewhere = tmp_path / "somewhere-else"
+        elsewhere.mkdir()
+        blob = elsewhere / "weights"
+        blob.write_bytes(b"x" * 8192)
+
+        snapshot = (
+            tmp_path / "models--Systran--faster-whisper-base" / "snapshots" / "rev"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.bin").symlink_to(blob)
+        assert downloaded_bytes("base", tmp_path) == 8192
+
+    def test_a_broken_link_does_not_break_the_count(self, tmp_path):
+        from speech2text.engines.whisper import downloaded_bytes
+
+        snapshot = (
+            tmp_path / "models--Systran--faster-whisper-base" / "snapshots" / "rev"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "real.bin").write_bytes(b"x" * 512)
+        (snapshot / "model.bin").symlink_to(tmp_path / "gone")
+        assert downloaded_bytes("base", tmp_path) == 512
+
     def test_a_local_folder_of_weights_is_accepted(self, tmp_path):
         from speech2text.engines.whisper import WhisperEngine
 
@@ -236,6 +269,7 @@ class TestModelCacheLayout:
         assert WhisperEngine(str(local), cache_dir=tmp_path).model_ready() is True
 
 
+@requires_whisper
 class TestDeviceFallback:
     """A laptop GPU is often too small for a large model.
 
@@ -349,3 +383,106 @@ class TestDeviceFallback:
         from speech2text.engines.whisper import _is_out_of_memory
 
         assert _is_out_of_memory(detail) is expected
+
+
+@requires_whisper
+class TestWhisperReadsDecodedAudioDirectly:
+    """The pipeline already decoded the audio, so the engine hands over samples.
+
+    Giving faster-whisper a path makes it decode the file again through PyAV,
+    whose API has broken under it before — "open() got an unexpected keyword
+    argument 'metadata_errors'". Passing samples avoids that path entirely.
+    """
+
+    def test_samples_are_read_from_the_decoded_wav(self, spoken_wav):
+        numpy = pytest.importorskip("numpy")
+        from speech2text.engines.whisper import _read_samples
+
+        samples = _read_samples(Path(spoken_wav))
+        assert samples.dtype == numpy.float32
+        assert samples.ndim == 1 and len(samples) > 0
+        assert -1.0 <= float(samples.min()) and float(samples.max()) <= 1.0
+
+    @requires_ffmpeg
+    def test_audio_that_is_not_what_the_pipeline_produces_is_refused(
+        self, stereo_audio, tmp_path
+    ):
+        pytest.importorskip("numpy")
+        from speech2text import media
+        from speech2text.engines.base import EngineError
+        from speech2text.engines.whisper import _read_samples
+
+        wrong = media.decode_to_wav(
+            stereo_audio, tmp_path / "wrong.wav", sample_rate=8000, channels=2
+        )
+        with pytest.raises(EngineError, match="16000 Hz mono"):
+            _read_samples(wrong)
+
+    def test_the_model_is_given_samples_and_never_a_path(self, spoken_wav, tmp_path, monkeypatch):
+        """The regression guard: a path would re-enter PyAV."""
+        numpy = pytest.importorskip("numpy")
+        import faster_whisper
+
+        from speech2text.engines.base import TranscriptionRequest
+        from speech2text.engines.whisper import WhisperEngine
+
+        handed: dict = {}
+
+        class FakeInfo:
+            duration = 1.0
+            language = "en"
+            language_probability = 0.99
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def transcribe(self, audio, **kwargs):
+                handed["audio"] = audio
+                return iter(()), FakeInfo()
+
+        monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+        engine = WhisperEngine("base", device="cpu", cache_dir=tmp_path)
+        engine.transcribe(
+            TranscriptionRequest(audio=Path(spoken_wav), duration=1.0)
+        )
+        assert isinstance(handed["audio"], numpy.ndarray)
+        assert not isinstance(handed["audio"], (str, Path))
+
+
+class TestWhisperAvailabilityMessages:
+    def test_a_missing_library_says_how_to_install_it(self, monkeypatch):
+        import builtins
+
+        from speech2text.engines.whisper import WhisperEngine
+
+        real_import = builtins.__import__
+
+        def refuse(name, *args, **kwargs):
+            if name == "faster_whisper":
+                raise ImportError("No module named 'faster_whisper'", name="faster_whisper")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", refuse)
+        usable, reason = WhisperEngine().availability()
+        assert not usable and "[whisper]" in reason
+
+    def test_a_broken_dependency_names_the_real_culprit(self, monkeypatch):
+        """Saying "not installed" sends someone to fix the wrong thing."""
+        import builtins
+
+        from speech2text.engines.whisper import WhisperEngine
+
+        real_import = builtins.__import__
+
+        def refuse(name, *args, **kwargs):
+            if name == "faster_whisper":
+                raise ImportError("libavcodec.so.60: cannot open shared object", name="av")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", refuse)
+        usable, reason = WhisperEngine().availability()
+        assert not usable
+        assert "'av'" in reason and "libavcodec" in reason
+        assert "force-reinstall" in reason
+        assert "is not installed" not in reason
